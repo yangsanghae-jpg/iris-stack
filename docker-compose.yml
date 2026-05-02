@@ -1,0 +1,45 @@
+# Step 2: OpenWebUI. Ollama on Mac host at host.docker.internal:11434
+# Step 3 will add L2 Gateway.
+#
+# WEBUI_AUTH=false is for local testing only; enable auth for production.
+name: ${PROJECT_NAME:-iris-stack}
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: iris-open-webui
+    restart: unless-stopped
+    ports:
+      - "${OPEN_WEBUI_PORT:-3000}:8080"
+    environment:
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - ENABLE_OLLAMA_API=true
+      - ENABLE_OPENAI_API=true
+      - OPENAI_API_BASE_URL=http://l2-gateway:8010/v1
+      - OPENAI_API_KEY=iris-local
+      - WEBUI_AUTH=false
+    volumes:
+      - iris-open-webui-data:/app/backend/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - iris-net
+  l2-gateway:
+    build:
+      context: ./l2-gateway
+    container_name: iris-l2-gateway
+    restart: unless-stopped
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+    ports:
+      - "${L2_GATEWAY_PORT}:8010"
+    networks:
+      - iris-net
+networks:
+  iris-net:
+    name: iris-net
+    driver: bridge
+volumes:
+  iris-open-webui-data:
+    name: iris-open-webui-data
+  iris-l2-gateway-data:
+    name: iris-l2-gateway-data
