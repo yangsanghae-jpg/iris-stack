@@ -40,6 +40,180 @@ _THINK_BLOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
+_REASON_LINE_PREFIXES_EN = (
+    "okay,",
+    "the user is asking",
+    "the user provided",
+    "user is asking",
+    "let me think",
+    "let me analyze",
+    "let me check",
+    "let me review",
+    "let me see",
+    "i need to",
+    "first, i need to",
+    "looking at the search results",
+    "i should",
+    "now i need to",
+    "i will",
+    "we need to",
+)
+
+
+def _strip_leading_english_reasoning(s: str) -> str:
+    """답변 앞부분에 붙는 영어 self-reasoning 줄만 보수적으로 제거."""
+    lines = s.splitlines()
+    i = 0
+    removed = 0
+    while i < len(lines) and removed < 48:
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            removed += 1
+            continue
+        low = line.lower()
+        if not any(low.startswith(p) for p in _REASON_LINE_PREFIXES_EN):
+            break
+        hangul = sum(1 for c in line if "\uac00" <= c <= "\ud7af")
+        if hangul >= 4:
+            break
+        i += 1
+        removed += 1
+    return "\n".join(lines[i:]).lstrip()
+
+
+def _strip_leading_search_walkthrough_lines(s: str) -> str:
+    """앞쪽 'Let me…' / 'User is asking' / '[n] - …' 영어 검색 해설 줄 제거."""
+    lines = s.splitlines()
+    i = 0
+    max_scan = min(len(lines), 160)
+    while i < max_scan:
+        st = lines[i].strip()
+        if not st:
+            i += 1
+            continue
+        low = st.lower()
+        hangul = sum(1 for c in st if "\uac00" <= c <= "\ud7af")
+        removed = False
+
+        if re.match(r"^\[\d+\]\s+", st) and hangul < 8:
+            i += 1
+            removed = True
+        elif re.match(r"^\d+\.\s+", st) and hangul < 8:
+            if any(
+                k in low
+                for k in (
+                    "result",
+                    "pdf",
+                    "search",
+                    "dictionary",
+                    "catti",
+                    "grammar",
+                    "syntax",
+                    "mention",
+                    "textbook",
+                    "translation",
+                )
+            ):
+                i += 1
+                removed = True
+        elif low.startswith("let me ") or low.startswith("user is asking"):
+            i += 1
+            removed = True
+        elif low.startswith("first, i") and hangul < 6 and ("search" in low or "result" in low):
+            i += 1
+            removed = True
+        elif low.startswith("let me check the search results"):
+            i += 1
+            removed = True
+        elif low.startswith("checking the search results"):
+            i += 1
+            removed = True
+        elif hangul < 12 and low.startswith("'s look"):
+            i += 1
+            removed = True
+        elif hangul < 12 and "look at the search results" in low:
+            i += 1
+            removed = True
+        elif hangul < 20 and "i'll respond in korean" in low:
+            i += 1
+            removed = True
+        elif hangul < 10 and re.match(r"^result\s+\d+\s*:", low, re.IGNORECASE):
+            i += 1
+            removed = True
+        elif re.match(r"^search result\s*\[", low):
+            i += 1
+            removed = True
+        elif hangul < 16 and "none of these" in low and ("search" in low or "result" in low):
+            i += 1
+            removed = True
+        elif hangul < 14 and low.startswith("hmm,"):
+            i += 1
+            removed = True
+
+        if removed:
+            continue
+        if hangul >= 6:
+            break
+        break
+    return "\n".join(lines[i:]).lstrip()
+
+
+_META_PARAGRAPH_HINTS = (
+    "i need to make sure",
+    "the rules say",
+    "since there's no information",
+    "since there is no information",
+    "since there are no",
+    "provided search results",
+    "search results don't",
+    "search results do not",
+    "none of the search results",
+    "none of these results mention",
+    "none of these search results mention",
+    "the user is asking for",
+    "inform the user that",
+    "don't contain any relevant",
+    "confidence is low",
+    "i should inform the user",
+    "no information about",
+)
+
+
+def _strip_english_meta_paragraphs(s: str) -> str:
+    """본문 중간에 끼는 영어 검색/계획 메타 단락만 제거(한글 본문 보존)."""
+    if not (s or "").strip():
+        return s or ""
+    blocks = re.split(r"\n{2,}", s)
+    kept: List[str] = []
+    for b in blocks:
+        t = b.strip()
+        if not t:
+            continue
+        low = t.lower()
+        hangul = sum(1 for c in t if "\uac00" <= c <= "\ud7af")
+        if hangul >= 8:
+            kept.append(t)
+            continue
+        if re.match(r"^\[\d+\]\s+", t) and hangul < 8:
+            continue
+        if re.search(r"result\s*\[\d+\]", low) and hangul < 8:
+            continue
+        searchish = "search" in low or re.search(r"result\s*\[\d+\]", low) is not None
+        if (
+            len(t) > 28
+            and hangul < 8
+            and searchish
+            and (
+                any(h in low for h in _META_PARAGRAPH_HINTS)
+                or ("i need to" in low and len(t) > 40)
+                or ("i should" in low and "user" in low)
+            )
+        ):
+            continue
+        kept.append(t)
+    return "\n\n".join(kept).strip()
+
 
 def extract_query_terms(user_text: str) -> List[str]:
     """질문에서 핵심어 추출(최소 동작)."""
@@ -143,28 +317,114 @@ def filter_search_results(search_result: dict, user_text: str) -> dict:
     return out
 
 
-def strip_think_tags(content: str) -> str:
-    s = content or ""
+def strip_thinking_content(text: str) -> str:
+    """redacted_thinking 태그 및 앞부분 영어 reasoning 제거."""
+    s = text or ""
     s = _THINK_BLOCK_RE.sub("", s)
     s = s.replace("<think>", "").replace("</think>", "")
+    for _ in range(8):
+        n = _strip_leading_english_reasoning(s)
+        n = _strip_leading_search_walkthrough_lines(n)
+        if n == s:
+            s = n
+            break
+        s = n
+    s = _strip_english_meta_paragraphs(s)
     return s
 
 
 def strip_model_generated_source_blocks(content: str) -> str:
-    """모델이 본문에 만든 출처 블록 제거(L2 footer와 중복 방지)."""
-    s = content or ""
-    idx = s.find("[IRIS 검색 출처]")
-    if idx >= 0:
-        s = s[:idx].rstrip()
-    for marker in ("\n\n검색 결과 출처", "\n검색 결과 출처", "검색 결과 출처"):
+    """모델이 본문에 만든 출처 블록 제거(L2 footer 1회만 유지)."""
+    s = (content or "").rstrip()
+    if not s:
+        return ""
+    cut = len(s)
+    iris = s.find("[IRIS 검색 출처]")
+    if iris >= 0:
+        cut = min(cut, iris)
+    thresh = int(len(s) * 0.7)
+    tail_markers = (
+        "검색 결과 출처",
+        "\n\nSources:",
+        "\nSources:",
+        "Sources:",
+        "\n\nReferences:",
+        "\nReferences:",
+        "References:",
+        "\n\n출처:",
+        "\n출처:",
+    )
+    for m in tail_markers:
+        j = s.find(m)
+        if j >= 0 and j >= thresh:
+            cut = min(cut, j)
+    for marker in ("\n\n검색 결과 출처", "\n검색 결과 출처"):
         j = s.find(marker)
         if j >= 0:
-            s = s[:j].rstrip()
+            cut = min(cut, j)
     for marker in ("\n\n출처:", "\n출처:", "출처:", "\n\n출처：", "\n출처：", "출처："):
         j = s.find(marker)
-        if j >= 0:
-            s = s[:j].rstrip()
-    return s.rstrip()
+        if j >= 0 and j >= thresh:
+            cut = min(cut, j)
+    out = s[:cut].rstrip() if cut < len(s) else s
+    return out.rstrip()
+
+
+def normalize_answer_markdown(text: str) -> str:
+    """깨진 마크다운 최소 정리."""
+    s = text or ""
+    s = re.sub(r"(?<![#\n])#{4,}\s*", "### ", s)
+    s = re.sub(r"(---)(#{2,})", r"\1\n\n\2", s)
+
+    def _fix_line(line: str) -> str:
+        st = line.lstrip()
+        if st.startswith(">") and not st.startswith(">>"):
+            rest = re.sub(r"^\s*>\s?", "", line)
+            if rest.strip()[:2] in ("📌", "✅", "▶", "🔹", "📎"):
+                return rest.rstrip("\n")
+        return line
+
+    s = "\n".join(_fix_line(ln) for ln in s.split("\n"))
+    s = re.sub(r"\n{4,}", "\n\n", s)
+    s = re.sub(r"([\.!?。])\s*(#{1,6}\s)", r"\1\n\n\2", s)
+    return s.strip()
+
+
+def sanitize_final_answer(
+    content: str,
+    search_result: Optional[dict] = None,
+) -> Tuple[str, Dict[str, bool]]:
+    """최종 사용자 노출용 본문 정리(footer는 호출 측에서 1회만)."""
+    _ = search_result
+    raw = "" if content is None else str(content)
+    a = strip_thinking_content(raw)
+    b = strip_model_generated_source_blocks(a)
+    c = normalize_answer_markdown(b)
+    flags = {
+        "stripped_think": a != raw,
+        "stripped_sources": b != a,
+        "normalized_md": c != b,
+    }
+    return c.strip(), flags
+
+
+def _chunk_text_for_sse(text: str, max_chars: int = 900) -> List[str]:
+    if not text:
+        return []
+    n = len(text)
+    chunks: List[str] = []
+    start = 0
+    while start < n:
+        end = min(n, start + max_chars)
+        if end < n:
+            cut = text.rfind("\n", start + 1, end)
+            if cut <= start:
+                cut = end
+            else:
+                end = cut + 1
+        chunks.append(text[start:end])
+        start = end
+    return [c for c in chunks if c]
 
 
 def _iris_search_rules_text() -> str:
@@ -418,14 +678,13 @@ async def _ollama_chat_stream_sse(
     settings: Dict[str, Any],
     search_result: Optional[dict],
 ) -> AsyncIterator[bytes]:
-    """Ollama /api/chat NDJSON(stream) → OpenAI 호환 SSE."""
-    any_think_strip = False
-    any_source_strip = False
+    """Ollama stream 수집 → sanitize → OpenAI SSE로 재전송(품질 우선)."""
     yield _sse_data(
         _openai_chunk(request_id, created, model, role="assistant", content=None)
     )
 
-    last_content = ""
+    last_full = ""
+    done_reason = "stop"
     timeout = httpx.Timeout(180.0, connect=30.0)
     try:
         print("[L2] calling Ollama", flush=True)
@@ -455,63 +714,65 @@ async def _ollama_chat_stream_sse(
                     cur_raw = msg.get("content")
                     cur = "" if cur_raw is None else str(cur_raw)
                     done = bool(obj.get("done"))
-
-                    if cur.startswith(last_content):
-                        delta_text = cur[len(last_content) :]
-                    else:
-                        delta_text = cur
-                        last_content = ""
-                    last_content = cur if cur else last_content
-
-                    if delta_text:
-                        tmp_src = strip_model_generated_source_blocks(delta_text)
-                        any_source_strip = any_source_strip or (tmp_src != delta_text)
-                        tmp_out = strip_think_tags(tmp_src)
-                        any_think_strip = any_think_strip or (tmp_out != tmp_src)
-                        if tmp_out:
-                            yield _sse_data(
-                                _openai_chunk(
-                                    request_id,
-                                    created,
-                                    model,
-                                    content=tmp_out,
-                                )
-                            )
-
+                    # Ollama /api/chat stream: message.content는 대부분 누적 전체 문자열
+                    if cur:
+                        if not last_full:
+                            last_full = cur
+                        elif cur.startswith(last_full):
+                            last_full = cur
+                        elif last_full.startswith(cur):
+                            pass
+                        else:
+                            last_full = last_full + cur
                     if done:
-                        if search_used and settings.get("append_sources", True) and search_result is not None:
-                            footer = build_iris_source_footer(
-                                search_result,
-                                int(settings["max_results"]),
-                            )
-                            if footer:
-                                foot = strip_think_tags(footer)
-                                if foot:
-                                    yield _sse_data(
-                                        _openai_chunk(
-                                            request_id,
-                                            created,
-                                            model,
-                                            content=foot,
-                                        )
-                                    )
+                        done_reason = obj.get("done_reason") or "stop"
+                        fc = msg.get("content")
+                        if isinstance(fc, str) and fc.strip():
+                            if not last_full:
+                                last_full = fc
+                            elif fc.startswith(last_full):
+                                last_full = fc
+                            elif last_full.startswith(fc):
+                                pass
+                            else:
+                                last_full = last_full + fc
+                        break
 
-                        fr = obj.get("done_reason") or "stop"
-                        last_chunk = _openai_chunk(
-                            request_id,
-                            created,
-                            model,
-                            finish_reason=fr,
-                        )
-                        last_chunk["iris_trace"] = iris_trace
-                        yield _sse_data(last_chunk)
-                        yield b"data: [DONE]\n\n"
-                        print(
-                            f"[L2] content cleanup: stripped_think={any_think_strip} stripped_sources={any_source_strip}",
-                            flush=True,
-                        )
-                        print("[L2] response ok", flush=True)
-                        return
+        raw_full = last_full or ""
+        clean, flags = sanitize_final_answer(raw_full, search_result)
+        footer = ""
+        if search_used and settings.get("append_sources", True) and search_result is not None:
+            footer = build_iris_source_footer(search_result, int(settings["max_results"])) or ""
+        final_text = clean
+        if footer:
+            final_text = f"{clean.rstrip()}{footer}"
+        print(
+            "[L2] content cleanup: "
+            f"stripped_think={flags.get('stripped_think')} stripped_sources={flags.get('stripped_sources')}",
+            flush=True,
+        )
+        pieces = _chunk_text_for_sse(final_text, max_chars=900)
+        if not pieces:
+            pieces = [""]
+        for piece in pieces:
+            yield _sse_data(
+                _openai_chunk(
+                    request_id,
+                    created,
+                    model,
+                    content=piece,
+                )
+            )
+        last_chunk = _openai_chunk(
+            request_id,
+            created,
+            model,
+            finish_reason=done_reason,
+        )
+        last_chunk["iris_trace"] = iris_trace
+        yield _sse_data(last_chunk)
+        yield b"data: [DONE]\n\n"
+        print("[L2] response ok", flush=True)
     except httpx.HTTPStatusError as e:
         yield _sse_data(
             {
@@ -788,21 +1049,19 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         data = r.json()
         raw_content = (data.get("message", {}) or {}).get("content", "")
         raw_content = "" if raw_content is None else str(raw_content)
-        no_sources = strip_model_generated_source_blocks(raw_content)
-        stripped_sources = raw_content != no_sources
-        content = strip_think_tags(no_sources)
-        stripped_think = no_sources != content
-        print(
-            f"[L2] content cleanup: stripped_think={stripped_think} stripped_sources={stripped_sources}",
-            flush=True,
-        )
+        clean_content, flags = sanitize_final_answer(raw_content, search_result)
+        footer = ""
         if search_used and settings.get("append_sources", True):
             footer = build_iris_source_footer(
                 search_result,
                 int(settings["max_results"]),
-            )
-            if footer:
-                content = f"{str(content).rstrip()}{footer}"
+            ) or ""
+        content = clean_content if not footer else f"{clean_content.rstrip()}{footer}"
+        print(
+            "[L2] content cleanup: "
+            f"stripped_think={flags.get('stripped_think')} stripped_sources={flags.get('stripped_sources')}",
+            flush=True,
+        )
         print("[L2] response ok", flush=True)
         return {
             "id": request_id,
