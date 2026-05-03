@@ -27,10 +27,12 @@ def _normalize_l4_search_urls() -> Tuple[str, str]:
 
 L4_SEARCH_BASE, L4_SEARCH_POST_URL = _normalize_l4_search_urls()
 
+# 명시형 기본 트리거(v0.1). IRIS_SEARCH_TRIGGERS 환경변수로 덮어쓸 수 있음.
 _DEFAULT_TRIGGERS_CSV = (
-    "검색,찾아,최신,오늘,현재,지금,뉴스,주가,공휴일,일정,가격,"
-    "2025,2026,2027,search,latest,today,current,news,price"
+    "검색,찾아봐,최신,오늘,현재,뉴스,공휴일,주가,가격,2026,법정,일정,트렌드"
 )
+
+IRIS_TRACE_ROUTE = "openwebui -> l2 -> l4-search -> ollama"
 
 
 def _parse_bool_env(name: str, default: bool = True) -> bool:
@@ -149,33 +151,45 @@ def build_iris_source_footer(search_result: Optional[dict], max_results: int) ->
 
 
 def build_iris_trace(
+    *,
+    model: str,
+    stream: bool,
     search_used: bool,
     search_result: Optional[dict],
     max_results: int,
+    last_user_text: str,
+    settings: Dict[str, Any],
 ) -> dict:
+    """OpenWebUI /v1/chat/completions용 표준 iris_trace (stream 시 마지막 chunk에만 첨부)."""
     cap = max(1, min(int(max_results), 20))
+    triggers_cfg = settings.get("triggers") or []
+    matched = find_matched_triggers(last_user_text, triggers_cfg)
+
+    out: Dict[str, Any] = {
+        "l2_gateway": True,
+        "model": model,
+        "search_used": bool(search_used),
+        "search_ok": False,
+        "search_count": 0,
+        "search_urls": [],
+        "route": IRIS_TRACE_ROUTE,
+        "stream": bool(stream),
+        "matched_triggers": matched,
+    }
+
     if not search_used or search_result is None:
-        return {
-            "l2_gateway": True,
-            "search_checked": True,
-            "search_used": False,
-            "search_ok": False,
-            "search_provider": None,
-            "search_count": 0,
-            "search_urls": [],
-        }
+        return out
+
     ok = bool(search_result.get("ok"))
     results = search_result.get("results") or []
     urls = [item.get("url") for item in results if item.get("url")][:cap]
-    return {
-        "l2_gateway": True,
-        "search_checked": True,
-        "search_used": True,
-        "search_ok": ok,
-        "search_provider": "firecrawl",
-        "search_count": len(results),
-        "search_urls": urls,
-    }
+    out["search_ok"] = ok
+    out["search_count"] = len(results)
+    out["search_urls"] = urls
+    if not ok:
+        err = search_result.get("error")
+        out["search_error"] = str(err) if err is not None else "search failed"
+    return out
 
 
 def _sse_data(obj: Any) -> bytes:
@@ -233,6 +247,7 @@ async def _ollama_chat_stream_sse(
     last_content = ""
     timeout = httpx.Timeout(180.0, connect=30.0)
     try:
+        print("[L2] calling Ollama", flush=True)
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
                 "POST",
@@ -303,7 +318,7 @@ async def _ollama_chat_stream_sse(
                         last_chunk["iris_trace"] = iris_trace
                         yield _sse_data(last_chunk)
                         yield b"data: [DONE]\n\n"
-                        print("[L2] /v1/chat/completions stream response ok", flush=True)
+                        print("[L2] response ok", flush=True)
                         return
     except httpx.HTTPStatusError as e:
         yield _sse_data(
@@ -402,6 +417,9 @@ def health():
         "app": APP_NAME,
         "ollama_base_url": OLLAMA_BASE_URL,
         "ts": int(time.time()),
+        "openwebui_chat_path": "/v1/chat/completions",
+        "route": IRIS_TRACE_ROUTE,
+        "l4_search_base": L4_SEARCH_BASE,
     }
 
 
@@ -474,6 +492,12 @@ def chat(req: ChatRequest):
 
 @app.post("/v1/chat/completions")
 async def openai_chat_completions(req: OpenAIChatCompletionRequest):
+    print(
+        "[L2] request received",
+        {"path": "/v1/chat/completions", "model": req.model, "stream": req.stream},
+        flush=True,
+    )
+
     options = req.options.copy() if req.options else {}
     if req.temperature is not None:
         options["temperature"] = req.temperature
@@ -485,11 +509,13 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
     settings = get_iris_search_settings()
     last_user_content = get_last_user_content(req.messages)
     search_used = should_use_search(last_user_content, settings)
+    print(f"[L2] search decision: {search_used}", flush=True)
+
     search_result: Optional[dict] = None
     search_context = ""
 
     if search_used:
-        print("[L2] /v1/chat/completions search branch: calling L4-search", flush=True)
+        print("[L2] calling L4-search", flush=True)
         search_result = await call_l4_search(
             last_user_content,
             limit=int(settings["max_results"]),
@@ -498,13 +524,9 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
             search_result,
             int(settings["max_results"]),
         )
-        print(
-            "[L2] /v1/chat/completions search branch: ok=",
-            search_result.get("ok"),
-            "count=",
-            len(search_result.get("results") or []),
-            flush=True,
-        )
+        ok = bool(search_result.get("ok"))
+        cnt = len(search_result.get("results") or [])
+        print(f"[L2] L4-search result: ok={ok} count={cnt}", flush=True)
 
     messages_for_ollama: List[Dict[str, Any]] = [m.model_dump() for m in req.messages]
     if search_context:
@@ -524,18 +546,14 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
     created = int(time.time())
     request_id = f"chatcmpl-iris-{uuid.uuid4().hex[:12]}"
     iris_trace = build_iris_trace(
-        search_used,
-        search_result,
-        int(settings["max_results"]),
+        model=req.model,
+        stream=bool(req.stream),
+        search_used=search_used,
+        search_result=search_result,
+        max_results=int(settings["max_results"]),
+        last_user_text=last_user_content,
+        settings=settings,
     )
-
-    print("[L2] /v1/chat/completions request:", {
-        "model": req.model,
-        "message_count": len(req.messages),
-        "ollama_message_count": len(messages_for_ollama),
-        "stream": req.stream,
-        "search_used": search_used,
-    }, flush=True)
 
     if req.stream:
         return StreamingResponse(
@@ -559,6 +577,7 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
 
     payload["stream"] = False
     try:
+        print("[L2] calling Ollama", flush=True)
         r = requests.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json=payload,
@@ -576,7 +595,7 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
             )
             if footer:
                 content = f"{str(content).rstrip()}{footer}"
-        print("[L2] /v1/chat/completions response ok", flush=True)
+        print("[L2] response ok", flush=True)
         return {
             "id": request_id,
             "object": "chat.completion",
@@ -615,6 +634,7 @@ def debug_search_decision(body: SearchDecisionDebugRequest):
         "matched_triggers": matched,
         "max_results": cfg["max_results"],
         "append_sources": cfg["append_sources"],
+        "route": IRIS_TRACE_ROUTE,
     }
 
 
