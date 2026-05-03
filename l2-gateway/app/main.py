@@ -30,7 +30,7 @@ L4_SEARCH_BASE, L4_SEARCH_POST_URL = _normalize_l4_search_urls()
 
 # 명시형 기본 트리거(v0.1). IRIS_SEARCH_TRIGGERS 환경변수로 덮어쓸 수 있음.
 _DEFAULT_TRIGGERS_CSV = (
-    "검색,찾아봐,최신,오늘,현재,뉴스,공휴일,주가,가격,2026,법정,일정,트렌드"
+    "검색,찾아봐,최신,오늘,뉴스,공휴일,주가,가격,2026,법정,일정,트렌드"
 )
 
 IRIS_TRACE_ROUTE = "openwebui -> l2 -> l4-search -> ollama"
@@ -478,6 +478,205 @@ def get_iris_search_settings() -> Dict[str, Any]:
     }
 
 
+def get_memory_settings() -> Dict[str, Any]:
+    return {
+        "memory_enabled": _parse_bool_env("IRIS_MEMORY_ENABLED", True),
+        "memory_base_url": os.getenv(
+            "IRIS_MEMORY_BASE_URL", "http://host.docker.internal:8001"
+        ).rstrip("/"),
+        "user_id": os.getenv("IRIS_MEMORY_USER_ID", "iris"),
+        "project_id": os.getenv("IRIS_MEMORY_PROJECT_ID", "iris-stack"),
+    }
+
+
+def call_memory_health() -> dict:
+    """GET iris-memory /health; never raises."""
+    cfg = get_memory_settings()
+    if not cfg["memory_enabled"]:
+        return {"ok": False, "error": "memory disabled"}
+    url = f"{cfg['memory_base_url']}/health"
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            r = client.get(url)
+            r.raise_for_status()
+            data = r.json()
+        return {"ok": True, "status_code": r.status_code, "data": data}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:500]}
+
+
+async def call_memory_prefetch(user_message: str) -> dict:
+    """POST /memory/prefetch; chat continues on failure."""
+    cfg = get_memory_settings()
+    if not cfg["memory_enabled"]:
+        return {
+            "memory_used": False,
+            "ok": True,
+            "error": None,
+            "summary_for_trace": None,
+        }
+    text = (user_message or "").strip()
+    if not text:
+        return {
+            "memory_used": False,
+            "ok": True,
+            "error": None,
+            "summary_for_trace": None,
+        }
+    url = f"{cfg['memory_base_url']}/memory/prefetch"
+    body = {
+        "user_id": cfg["user_id"],
+        "project_id": cfg["project_id"],
+        "query": text[:8000],
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.post(url, json=body)
+            r.raise_for_status()
+            data = r.json()
+        if not isinstance(data, dict):
+            return {
+                "memory_used": False,
+                "ok": False,
+                "error": "invalid response",
+                "summary_for_trace": None,
+            }
+        meta = data.get("meta") or {}
+        summary = {
+            "project_memory_count": meta.get("project_memory_count"),
+            "task_history_count": meta.get("task_history_count"),
+            "skill_count": meta.get("skill_count"),
+            "profile_included": meta.get("profile_included"),
+        }
+        return {
+            "memory_used": True,
+            "ok": True,
+            "error": None,
+            "data": data,
+            "summary_for_trace": summary,
+        }
+    except Exception as e:
+        return {
+            "memory_used": False,
+            "ok": False,
+            "error": str(e)[:300],
+            "summary_for_trace": None,
+        }
+
+
+def build_memory_context(memory_result: dict) -> str:
+    """Turn prefetch JSON into a bounded system message; empty if nothing useful."""
+    if not memory_result.get("memory_used") or not memory_result.get("data"):
+        return ""
+    data = memory_result["data"]
+    if not isinstance(data, dict):
+        return ""
+    packet = data.get("packet") or {}
+    cfg = get_memory_settings()
+    prof = packet.get("operator_profile")
+    proj = list(packet.get("project_context") or [])
+    tasks = list(packet.get("related_tasks") or [])
+    skills = list(packet.get("reusable_skills") or [])
+    if not prof and not proj and not tasks and not skills:
+        return ""
+
+    lines: List[str] = [
+        "[IRIS_MEMORY_CONTEXT]",
+        f"- user_id: {cfg['user_id']}",
+        f"- project_id: {cfg['project_id']}",
+    ]
+    if prof and isinstance(prof, dict):
+        lines.append("[operator profile]")
+        if prof.get("name"):
+            lines.append(f"- name: {prof.get('name')}")
+        if prof.get("communication_style"):
+            lines.append(f"- communication_style: {prof.get('communication_style')}")
+        prefs = prof.get("preferences") or []
+        if prefs:
+            lines.append(f"- preferences: {json.dumps(prefs, ensure_ascii=False)[:800]}")
+        cons = prof.get("constraints") or []
+        if cons:
+            lines.append(f"- constraints: {json.dumps(cons, ensure_ascii=False)[:800]}")
+    if proj:
+        lines.append("[related project context]")
+        for row in proj[:12]:
+            if not isinstance(row, dict):
+                continue
+            title = row.get("title") or ""
+            cat = row.get("category") or ""
+            content = (row.get("content") or "")[:600]
+            lines.append(f"- [{cat}] {title}: {content}")
+    if tasks:
+        lines.append("[related tasks]")
+        for row in tasks[:12]:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"- {row.get('task_id', '')}: {(row.get('title') or '')[:120]} "
+                f"(status={row.get('status', '')}) summary={(row.get('summary') or '')[:200]}"
+            )
+    if skills:
+        lines.append("[reusable skills]")
+        for row in skills[:8]:
+            if not isinstance(row, dict):
+                continue
+            lines.append(
+                f"- {row.get('skill_id', '')}: {(row.get('title') or '')[:120]} — "
+                f"{(row.get('description') or '')[:200]}"
+            )
+    lines.extend(
+        [
+            "Rules:",
+            "- Use this memory only as context.",
+            "- Do not claim memory content as verified external fact.",
+            "- If memory conflicts with current user instruction, current user instruction wins.",
+            "[/IRIS_MEMORY_CONTEXT]",
+        ]
+    )
+    out = "\n".join(lines)
+    max_chars = 3800
+    if len(out) > max_chars:
+        out = out[: max_chars - 20] + "\n... [truncated]"
+    return out
+
+
+async def call_memory_writeback(
+    user_message: str,
+    assistant_content: str,
+    iris_trace: dict,
+) -> dict:
+    """POST /memory/writeback per iris-memory WritebackRequest; never raises."""
+    _ = iris_trace
+    cfg = get_memory_settings()
+    if not cfg["memory_enabled"]:
+        return {"ok": False, "error": "memory disabled"}
+    title = (user_message or "").strip().split("\n")[0][:200]
+    if not title:
+        title = "chat turn"
+    summary = f"user: {(user_message or '')[:1500]}\n\nassistant: {(assistant_content or '')[:2500]}"
+    if len(summary) > 4000:
+        summary = summary[:4000]
+    body = {
+        "user_id": cfg["user_id"],
+        "project_id": cfg["project_id"],
+        "task_title": title,
+        "task_summary": summary,
+        "status": "success",
+        "facts": [],
+        "constraints": [],
+        "procedures": [],
+    }
+    url = f"{cfg['memory_base_url']}/memory/writeback"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            r = await client.post(url, json=body)
+            r.raise_for_status()
+        return {"ok": True}
+    except Exception as e:
+        print(f"[L2] memory writeback failed: {e}", flush=True)
+        return {"ok": False, "error": str(e)[:300]}
+
+
 def find_matched_triggers(text: str, triggers: List[str]) -> List[str]:
     if not text or not str(text).strip():
         return []
@@ -589,6 +788,12 @@ def build_iris_trace(
     max_results: int,
     last_user_text: str,
     settings: Dict[str, Any],
+    memory_enabled: bool,
+    memory_used: bool,
+    memory_ok: bool,
+    memory_context_chars: int,
+    memory_writeback_ok: bool = False,
+    memory_error: Optional[str] = None,
 ) -> dict:
     """OpenWebUI /v1/chat/completions용 표준 iris_trace (stream 시 마지막 chunk에만 첨부)."""
     cap = max(1, min(int(max_results), 20))
@@ -609,6 +814,12 @@ def build_iris_trace(
         "search_relevance_warning": None,
         "search_filtered_count": 0,
         "search_original_count": 0,
+        "memory_enabled": bool(memory_enabled),
+        "memory_used": bool(memory_used),
+        "memory_ok": bool(memory_ok),
+        "memory_context_chars": int(memory_context_chars),
+        "memory_writeback_ok": bool(memory_writeback_ok),
+        "memory_error": memory_error,
     }
 
     if not search_used or search_result is None:
@@ -677,6 +888,7 @@ async def _ollama_chat_stream_sse(
     search_used: bool,
     settings: Dict[str, Any],
     search_result: Optional[dict],
+    last_user_content: str,
 ) -> AsyncIterator[bytes]:
     """Ollama stream 수집 → sanitize → OpenAI SSE로 재전송(품질 우선)."""
     yield _sse_data(
@@ -763,6 +975,12 @@ async def _ollama_chat_stream_sse(
                     content=piece,
                 )
             )
+        print("[L2] memory writeback (stream)", flush=True)
+        wb = await call_memory_writeback(last_user_content, final_text, iris_trace)
+        iris_trace["memory_writeback_ok"] = bool(wb.get("ok"))
+        if not wb.get("ok"):
+            print(f"[L2] memory writeback failed (stream): {wb.get('error')}", flush=True)
+
         last_chunk = _openai_chunk(
             request_id,
             created,
@@ -820,6 +1038,10 @@ class SearchDecisionDebugRequest(BaseModel):
     text: str
 
 
+class DebugMemoryPrefetchRequest(BaseModel):
+    message: str
+
+
 def get_last_user_content(messages: List[ChatMessage]) -> str:
     for m in reversed(messages):
         if m.role == "user" and m.content is not None:
@@ -865,6 +1087,8 @@ def search_proxy(body: SearchProxyRequest):
 
 @app.get("/health")
 def health():
+    mem_cfg = get_memory_settings()
+    mh = call_memory_health()
     return {
         "ok": True,
         "app": APP_NAME,
@@ -873,6 +1097,9 @@ def health():
         "openwebui_chat_path": "/v1/chat/completions",
         "route": IRIS_TRACE_ROUTE,
         "l4_search_base": L4_SEARCH_BASE,
+        "memory_enabled": bool(mem_cfg["memory_enabled"]),
+        "memory_base_url": mem_cfg["memory_base_url"],
+        "memory_health": {"ok": bool(mh.get("ok"))},
     }
 
 
@@ -960,7 +1187,25 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         options["top_p"] = req.top_p
 
     settings = get_iris_search_settings()
+    mem_cfg = get_memory_settings()
     last_user_content = get_last_user_content(req.messages)
+
+    memory_result: Dict[str, Any] = {"memory_used": False, "ok": True, "error": None}
+    if mem_cfg["memory_enabled"] and last_user_content.strip():
+        print("[L2] memory prefetch", flush=True)
+        memory_result = await call_memory_prefetch(last_user_content)
+        print(
+            f"[L2] memory prefetch done used={memory_result.get('memory_used')} ok={memory_result.get('ok')}",
+            flush=True,
+        )
+
+    memory_context_str = build_memory_context(memory_result)
+    memory_ok = (not mem_cfg["memory_enabled"]) or bool(memory_result.get("ok"))
+    memory_used_flag = bool(memory_result.get("memory_used"))
+    memory_err: Optional[str] = (
+        None if memory_result.get("ok") else str(memory_result.get("error") or "prefetch failed")
+    )
+
     search_used = should_use_search(last_user_content, settings)
     print(f"[L2] search decision: {search_used}", flush=True)
 
@@ -991,9 +1236,14 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         )
 
     messages_for_ollama: List[Dict[str, Any]] = [m.model_dump() for m in req.messages]
-    if search_context:
+    if memory_context_str:
         messages_for_ollama.insert(
             0,
+            {"role": "system", "content": memory_context_str},
+        )
+    if search_context:
+        messages_for_ollama.insert(
+            1 if memory_context_str else 0,
             {"role": "system", "content": search_context},
         )
 
@@ -1015,6 +1265,12 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         max_results=int(settings["max_results"]),
         last_user_text=last_user_content,
         settings=settings,
+        memory_enabled=bool(mem_cfg["memory_enabled"]),
+        memory_used=memory_used_flag,
+        memory_ok=memory_ok,
+        memory_context_chars=len(memory_context_str),
+        memory_writeback_ok=False,
+        memory_error=memory_err,
     )
 
     if req.stream:
@@ -1028,6 +1284,7 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
                 search_used,
                 settings,
                 search_result,
+                last_user_content,
             ),
             media_type="text/event-stream",
             headers={
@@ -1062,6 +1319,12 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
             f"stripped_think={flags.get('stripped_think')} stripped_sources={flags.get('stripped_sources')}",
             flush=True,
         )
+        print("[L2] memory writeback", flush=True)
+        wb = await call_memory_writeback(last_user_content, content, iris_trace)
+        iris_trace["memory_writeback_ok"] = bool(wb.get("ok"))
+        if not wb.get("ok"):
+            print(f"[L2] memory writeback failed: {wb.get('error')}", flush=True)
+
         print("[L2] response ok", flush=True)
         return {
             "id": request_id,
@@ -1105,6 +1368,25 @@ def debug_search_decision(body: SearchDecisionDebugRequest):
     }
 
 
+@app.post("/debug/memory-prefetch")
+async def debug_memory_prefetch(body: DebugMemoryPrefetchRequest):
+    cfg = get_memory_settings()
+    res = await call_memory_prefetch(body.message)
+    preview = build_memory_context(res) if res.get("memory_used") else ""
+    preview = (preview or "")[:2000]
+    if res.get("memory_used") and res.get("ok") and not preview.strip():
+        preview = "[IRIS_MEMORY: prefetch ok; no profile/project/tasks/skills rows to expand]"
+    data = res.get("data")
+    raw_keys = list(data.keys()) if isinstance(data, dict) else []
+    return {
+        "ok": bool(res.get("ok")),
+        "memory_enabled": bool(cfg["memory_enabled"]),
+        "memory_used": bool(res.get("memory_used")),
+        "memory_context_preview": preview if preview else None,
+        "raw_keys": raw_keys,
+    }
+
+
 @app.get("/")
 def root():
     return {
@@ -1118,5 +1400,6 @@ def root():
             "/search/health",
             "/search",
             "/debug/search-decision",
+            "/debug/memory-prefetch",
         ],
     }
