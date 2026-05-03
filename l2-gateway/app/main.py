@@ -1,11 +1,13 @@
+import json
 import os
 import time
 import uuid
 import httpx
 import requests
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, AsyncIterator
 
 APP_NAME = "iris-l2-gateway"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
@@ -175,6 +177,147 @@ def build_iris_trace(
         "search_urls": urls,
     }
 
+
+def _sse_data(obj: Any) -> bytes:
+    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode("utf-8")
+
+
+def _openai_chunk(
+    request_id: str,
+    created: int,
+    model: str,
+    *,
+    role: Optional[str] = None,
+    content: Optional[str] = None,
+    finish_reason: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    delta: Dict[str, Any] = {}
+    if role is not None:
+        delta["role"] = role
+    if content is not None:
+        delta["content"] = content
+    out: Dict[str, Any] = {
+        "id": request_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": delta,
+                "finish_reason": finish_reason,
+            }
+        ],
+    }
+    if extra:
+        out.update(extra)
+    return out
+
+
+async def _ollama_chat_stream_sse(
+    ollama_payload: Dict[str, Any],
+    request_id: str,
+    created: int,
+    model: str,
+    iris_trace: Dict[str, Any],
+    search_used: bool,
+    settings: Dict[str, Any],
+    search_result: Optional[dict],
+) -> AsyncIterator[bytes]:
+    """Ollama /api/chat NDJSON(stream) → OpenAI 호환 SSE."""
+    yield _sse_data(
+        _openai_chunk(request_id, created, model, role="assistant", content=None)
+    )
+
+    last_content = ""
+    timeout = httpx.Timeout(180.0, connect=30.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{OLLAMA_BASE_URL}/api/chat",
+                json=ollama_payload,
+            ) as r:
+                r.raise_for_status()
+                async for line in r.aiter_lines():
+                    line = (line or "").strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if obj.get("error"):
+                        err = obj["error"]
+                        msg = err if isinstance(err, str) else (err.get("message") or str(err))
+                        yield _sse_data({"error": {"message": msg, "type": "ollama_error"}})
+                        return
+
+                    msg = obj.get("message") or {}
+                    cur_raw = msg.get("content")
+                    cur = "" if cur_raw is None else str(cur_raw)
+                    done = bool(obj.get("done"))
+
+                    if cur.startswith(last_content):
+                        delta_text = cur[len(last_content) :]
+                    else:
+                        delta_text = cur
+                        last_content = ""
+                    last_content = cur if cur else last_content
+
+                    if delta_text:
+                        yield _sse_data(
+                            _openai_chunk(
+                                request_id,
+                                created,
+                                model,
+                                content=delta_text,
+                            )
+                        )
+
+                    if done:
+                        if search_used and settings.get("append_sources", True) and search_result is not None:
+                            footer = build_iris_source_footer(
+                                search_result,
+                                int(settings["max_results"]),
+                            )
+                            if footer:
+                                yield _sse_data(
+                                    _openai_chunk(
+                                        request_id,
+                                        created,
+                                        model,
+                                        content=footer,
+                                    )
+                                )
+
+                        fr = obj.get("done_reason") or "stop"
+                        last_chunk = _openai_chunk(
+                            request_id,
+                            created,
+                            model,
+                            finish_reason=fr,
+                        )
+                        last_chunk["iris_trace"] = iris_trace
+                        yield _sse_data(last_chunk)
+                        yield b"data: [DONE]\n\n"
+                        print("[L2] /v1/chat/completions stream response ok", flush=True)
+                        return
+    except httpx.HTTPStatusError as e:
+        yield _sse_data(
+            {
+                "error": {
+                    "message": f"Ollama HTTP {e.response.status_code}",
+                    "type": "http_error",
+                }
+            }
+        )
+    except Exception as e:
+        yield _sse_data({"error": {"message": str(e), "type": "internal_error"}})
+
+
 app = FastAPI(title=APP_NAME)
 
 
@@ -331,11 +474,6 @@ def chat(req: ChatRequest):
 
 @app.post("/v1/chat/completions")
 async def openai_chat_completions(req: OpenAIChatCompletionRequest):
-    if req.stream:
-        raise HTTPException(
-            status_code=400,
-            detail="stream=true is not supported yet by iris-l2-gateway v0.1",
-        )
     options = req.options.copy() if req.options else {}
     if req.temperature is not None:
         options["temperature"] = req.temperature
@@ -375,10 +513,10 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
             {"role": "system", "content": search_context},
         )
 
-    payload = {
+    payload: Dict[str, Any] = {
         "model": req.model,
         "messages": messages_for_ollama,
-        "stream": False,
+        "stream": bool(req.stream),
         "think": False,
     }
     if options:
@@ -390,14 +528,37 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         search_result,
         int(settings["max_results"]),
     )
+
+    print("[L2] /v1/chat/completions request:", {
+        "model": req.model,
+        "message_count": len(req.messages),
+        "ollama_message_count": len(messages_for_ollama),
+        "stream": req.stream,
+        "search_used": search_used,
+    }, flush=True)
+
+    if req.stream:
+        return StreamingResponse(
+            _ollama_chat_stream_sse(
+                payload,
+                request_id,
+                created,
+                req.model,
+                iris_trace,
+                search_used,
+                settings,
+                search_result,
+            ),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    payload["stream"] = False
     try:
-        print("[L2] /v1/chat/completions request:", {
-            "model": req.model,
-            "message_count": len(req.messages),
-            "ollama_message_count": len(messages_for_ollama),
-            "stream": req.stream,
-            "search_used": search_used,
-        }, flush=True)
         r = requests.post(
             f"{OLLAMA_BASE_URL}/api/chat",
             json=payload,
