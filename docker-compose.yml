@@ -23,13 +23,28 @@ services:
       - "host.docker.internal:host-gateway"
     networks:
       - iris-net
+  l4-search:
+    build:
+      context: ./l4-search
+    container_name: iris-l4-search
+    restart: unless-stopped
+    ports:
+      - "${L4_SEARCH_PORT:-8020}:8020"
+    environment:
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
+      - PORT=8020
+    networks:
+      - iris-net
   l2-gateway:
     build:
       context: ./l2-gateway
     container_name: iris-l2-gateway
     restart: unless-stopped
+    depends_on:
+      - l4-search
     environment:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      L4_SEARCH_URL: ${L4_SEARCH_URL:-http://l4-search:8020/search}
     ports:
       - "${L2_GATEWAY_PORT}:8010"
     networks:
