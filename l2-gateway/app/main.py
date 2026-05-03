@@ -25,38 +25,62 @@ def _normalize_l4_search_urls() -> Tuple[str, str]:
 
 L4_SEARCH_BASE, L4_SEARCH_POST_URL = _normalize_l4_search_urls()
 
-SEARCH_TRIGGERS = [
-    "검색",
-    "찾아",
-    "최신",
-    "오늘",
-    "현재",
-    "지금",
-    "뉴스",
-    "주가",
-    "공휴일",
-    "일정",
-    "가격",
-    "2025",
-    "2026",
-    "2027",
-    "search",
-    "latest",
-    "today",
-    "current",
-    "news",
-    "price",
-]
+_DEFAULT_TRIGGERS_CSV = (
+    "검색,찾아,최신,오늘,현재,지금,뉴스,주가,공휴일,일정,가격,"
+    "2025,2026,2027,search,latest,today,current,news,price"
+)
 
 
-def should_use_search(text: str) -> bool:
+def _parse_bool_env(name: str, default: bool = True) -> bool:
+    v = os.getenv(name)
+    if v is None or str(v).strip() == "":
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "on", "y")
+
+
+def _parse_max_results() -> int:
+    try:
+        n = int(os.getenv("IRIS_SEARCH_MAX_RESULTS", "3"))
+    except ValueError:
+        n = 3
+    return max(1, min(n, 20))
+
+
+def get_iris_search_settings() -> Dict[str, Any]:
+    raw_triggers = os.getenv("IRIS_SEARCH_TRIGGERS")
+    if raw_triggers is None or not str(raw_triggers).strip():
+        trigger_list = [t.strip() for t in _DEFAULT_TRIGGERS_CSV.split(",") if t.strip()]
+    else:
+        trigger_list = [t.strip() for t in str(raw_triggers).split(",") if t.strip()]
+    return {
+        "search_enabled": _parse_bool_env("IRIS_SEARCH_ENABLED", True),
+        "append_sources": _parse_bool_env("IRIS_APPEND_SEARCH_SOURCES", True),
+        "max_results": _parse_max_results(),
+        "triggers": trigger_list,
+    }
+
+
+def find_matched_triggers(text: str, triggers: List[str]) -> List[str]:
+    if not text or not str(text).strip():
+        return []
+    t = str(text).lower()
+    matched: List[str] = []
+    for kw in triggers:
+        if not kw:
+            continue
+        if kw.lower() in t:
+            matched.append(kw)
+    return matched
+
+
+def should_use_search(text: str, settings: Optional[Dict[str, Any]] = None) -> bool:
+    cfg = settings if settings is not None else get_iris_search_settings()
+    if not cfg.get("search_enabled", True):
+        return False
     if not text or not str(text).strip():
         return False
-    t = str(text).lower()
-    for kw in SEARCH_TRIGGERS:
-        if kw.lower() in t:
-            return True
-    return False
+    triggers = cfg.get("triggers") or []
+    return len(find_matched_triggers(text, triggers)) > 0
 
 
 async def call_l4_search(query: str, limit: int = 3) -> dict:
@@ -80,18 +104,19 @@ async def call_l4_search(query: str, limit: int = 3) -> dict:
         return {"ok": False, "error": str(e), "results": []}
 
 
-def build_search_context(search_result: dict) -> str:
+def build_search_context(search_result: dict, max_results: int) -> str:
     if not search_result.get("ok"):
         return ""
     results = search_result.get("results") or []
     if not results:
         return ""
+    n = max(1, min(int(max_results), 20))
     lines = [
         "[IRIS_SEARCH_CONTEXT]",
         "아래 내용은 Firecrawl 검색 결과입니다. 답변은 가능한 한 이 검색 결과를 근거로 작성하십시오.",
         "검색 결과에 없는 내용을 확정적으로 말하지 마십시오.",
     ]
-    for i, item in enumerate(results[:3], start=1):
+    for i, item in enumerate(results[:n], start=1):
         title = item.get("title") or ""
         url = item.get("url") or ""
         summary = item.get("snippet") or item.get("description") or ""
@@ -103,13 +128,14 @@ def build_search_context(search_result: dict) -> str:
     return "\n".join(lines)
 
 
-def build_iris_source_footer(search_result: Optional[dict]) -> str:
+def build_iris_source_footer(search_result: Optional[dict], max_results: int) -> str:
     """OpenWebUI 등에서 보이도록 답변 끝에 붙일 출처 블록. URL이 없으면 빈 문자열."""
     if not search_result or not search_result.get("ok"):
         return ""
     results = search_result.get("results") or []
+    n = max(1, min(int(max_results), 20))
     entries: List[str] = []
-    for item in results[:3]:
+    for item in results[:n]:
         url = (item.get("url") or "").strip()
         if not url:
             continue
@@ -123,7 +149,9 @@ def build_iris_source_footer(search_result: Optional[dict]) -> str:
 def build_iris_trace(
     search_used: bool,
     search_result: Optional[dict],
+    max_results: int,
 ) -> dict:
+    cap = max(1, min(int(max_results), 20))
     if not search_used or search_result is None:
         return {
             "l2_gateway": True,
@@ -136,7 +164,7 @@ def build_iris_trace(
         }
     ok = bool(search_result.get("ok"))
     results = search_result.get("results") or []
-    urls = [item.get("url") for item in results if item.get("url")][:3]
+    urls = [item.get("url") for item in results if item.get("url")][:cap]
     return {
         "l2_gateway": True,
         "search_checked": True,
@@ -175,6 +203,10 @@ class OpenAIChatCompletionRequest(BaseModel):
 class SearchProxyRequest(BaseModel):
     query: str
     limit: int = 3
+
+
+class SearchDecisionDebugRequest(BaseModel):
+    text: str
 
 
 def get_last_user_content(messages: List[ChatMessage]) -> str:
@@ -312,15 +344,22 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
     if req.top_p is not None:
         options["top_p"] = req.top_p
 
+    settings = get_iris_search_settings()
     last_user_content = get_last_user_content(req.messages)
-    search_used = should_use_search(last_user_content)
+    search_used = should_use_search(last_user_content, settings)
     search_result: Optional[dict] = None
     search_context = ""
 
     if search_used:
         print("[L2] /v1/chat/completions search branch: calling L4-search", flush=True)
-        search_result = await call_l4_search(last_user_content, limit=3)
-        search_context = build_search_context(search_result)
+        search_result = await call_l4_search(
+            last_user_content,
+            limit=int(settings["max_results"]),
+        )
+        search_context = build_search_context(
+            search_result,
+            int(settings["max_results"]),
+        )
         print(
             "[L2] /v1/chat/completions search branch: ok=",
             search_result.get("ok"),
@@ -346,7 +385,11 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         payload["options"] = options
     created = int(time.time())
     request_id = f"chatcmpl-iris-{uuid.uuid4().hex[:12]}"
-    iris_trace = build_iris_trace(search_used, search_result)
+    iris_trace = build_iris_trace(
+        search_used,
+        search_result,
+        int(settings["max_results"]),
+    )
     try:
         print("[L2] /v1/chat/completions request:", {
             "model": req.model,
@@ -365,8 +408,11 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         content = (
             data.get("message", {}) or {}
         ).get("content", "")
-        if search_used:
-            footer = build_iris_source_footer(search_result)
+        if search_used and settings.get("append_sources", True):
+            footer = build_iris_source_footer(
+                search_result,
+                int(settings["max_results"]),
+            )
             if footer:
                 content = f"{str(content).rstrip()}{footer}"
         print("[L2] /v1/chat/completions response ok", flush=True)
@@ -397,6 +443,20 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         raise HTTPException(status_code=502, detail=f"Ollama chat failed: {e}")
 
 
+@app.post("/debug/search-decision")
+def debug_search_decision(body: SearchDecisionDebugRequest):
+    cfg = get_iris_search_settings()
+    matched = find_matched_triggers(body.text, cfg["triggers"])
+    use = bool(cfg["search_enabled"]) and len(matched) > 0
+    return {
+        "search_enabled": cfg["search_enabled"],
+        "should_use_search": use,
+        "matched_triggers": matched,
+        "max_results": cfg["max_results"],
+        "append_sources": cfg["append_sources"],
+    }
+
+
 @app.get("/")
 def root():
     return {
@@ -409,5 +469,6 @@ def root():
             "/v1/chat/completions",
             "/search/health",
             "/search",
+            "/debug/search-decision",
         ],
     }
