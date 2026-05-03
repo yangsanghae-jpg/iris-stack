@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 import uuid
 import httpx
@@ -33,6 +34,159 @@ _DEFAULT_TRIGGERS_CSV = (
 )
 
 IRIS_TRACE_ROUTE = "openwebui -> l2 -> l4-search -> ollama"
+
+_THINK_BLOCK_RE = re.compile(
+    r"<think>[\s\S]*?</think>",
+    re.IGNORECASE,
+)
+
+
+def extract_query_terms(user_text: str) -> List[str]:
+    """질문에서 핵심어 추출(최소 동작)."""
+    if not user_text or not str(user_text).strip():
+        return []
+    text = str(user_text)
+    terms: List[str] = []
+    seen: set[str] = set()
+
+    def add(t: str) -> None:
+        t = (t or "").strip()
+        if len(t) < 2:
+            return
+        key = t.lower()
+        if key not in seen:
+            seen.add(key)
+            terms.append(t)
+
+    for m in re.finditer(r"""["']([^"']{2,})["']""", text):
+        add(m.group(1))
+    for m in re.finditer(r"\b(19|20)\d{2}\b", text):
+        add(m.group(0))
+    for m in re.finditer(r"[\u3131-\u318E\uAC00-\uD7A3]{2,}", text):
+        add(m.group(0))
+    for m in re.finditer(r"[\u4e00-\u9fff]{2,}", text):
+        add(m.group(0))
+    for m in re.finditer(r"[A-Za-z]{2,}", text):
+        add(m.group(0))
+    for m in re.finditer(r"\$[A-Za-z]{1,6}\b|\b[A-Z]{2,6}\b", text):
+        add(m.group(0).lstrip("$"))
+    return terms
+
+
+def _search_result_haystack(result: dict) -> str:
+    parts: List[str] = []
+    for k in ("title", "url", "description", "content", "snippet"):
+        v = result.get(k)
+        if v is not None and str(v).strip():
+            parts.append(str(v))
+    return " ".join(parts)
+
+
+def score_search_result_relevance(result: dict, query_terms: List[str]) -> Dict[str, Any]:
+    hay = _search_result_haystack(result).lower()
+    matched: List[str] = []
+    for term in query_terms:
+        tl = term.lower()
+        if tl and tl in hay:
+            matched.append(term)
+    return {
+        "matched_terms": matched,
+        "score": len(matched),
+        "low_confidence": len(matched) == 0,
+    }
+
+
+def filter_search_results(search_result: dict, user_text: str) -> dict:
+    """
+    L4 원본을 유지하면서 results는 relevance 있는 항목만 남김.
+    전부 low면 ok 유지 + low_confidence + relevance_warning.
+    """
+    out: Dict[str, Any] = dict(search_result)
+    results = list(out.get("results") or [])
+    orig_n = len(results)
+    preview = [{"title": r.get("title"), "url": r.get("url")} for r in results[: max(8, orig_n)]]
+    out["original_results_preview"] = preview
+
+    if not out.get("ok") or orig_n == 0:
+        out["_iris_original_count"] = orig_n
+        out["_iris_filtered_count"] = orig_n
+        out["low_confidence"] = False
+        out.pop("relevance_warning", None)
+        return out
+
+    terms = extract_query_terms(user_text)
+    if not terms:
+        out["_iris_original_count"] = orig_n
+        out["_iris_filtered_count"] = orig_n
+        out["low_confidence"] = False
+        out.pop("relevance_warning", None)
+        return out
+
+    kept: List[dict] = []
+    for r in results:
+        sc = score_search_result_relevance(r, terms)
+        if not sc["low_confidence"]:
+            kept.append(r)
+
+    out["_iris_original_count"] = orig_n
+    if not kept:
+        out["results"] = []
+        out["low_confidence"] = True
+        out["relevance_warning"] = "Search results do not strongly match the user query."
+        out["_iris_filtered_count"] = 0
+        return out
+
+    out["results"] = kept
+    out["low_confidence"] = False
+    out.pop("relevance_warning", None)
+    out["_iris_filtered_count"] = len(kept)
+    return out
+
+
+def strip_think_tags(content: str) -> str:
+    s = content or ""
+    s = _THINK_BLOCK_RE.sub("", s)
+    s = s.replace("<think>", "").replace("</think>", "")
+    return s
+
+
+def strip_model_generated_source_blocks(content: str) -> str:
+    """모델이 본문에 만든 출처 블록 제거(L2 footer와 중복 방지)."""
+    s = content or ""
+    idx = s.find("[IRIS 검색 출처]")
+    if idx >= 0:
+        s = s[:idx].rstrip()
+    for marker in ("\n\n검색 결과 출처", "\n검색 결과 출처", "검색 결과 출처"):
+        j = s.find(marker)
+        if j >= 0:
+            s = s[:j].rstrip()
+    for marker in ("\n\n출처:", "\n출처:", "출처:", "\n\n출처：", "\n출처：", "출처："):
+        j = s.find(marker)
+        if j >= 0:
+            s = s[:j].rstrip()
+    return s.rstrip()
+
+
+def _iris_search_rules_text() -> str:
+    return "\n".join(
+        [
+            "[IRIS_SEARCH_RULES]",
+            "- Use only the search results below when answering search-based questions.",
+            "- Do not invent facts that are not present in the search results.",
+            "- If the search results do not strongly match the user's target, say that the search result is low confidence.",
+            "- If the user provided company/entity information conflicts with the search results, do not overwrite the user's information. State that the search results are insufficient or mismatched.",
+            '- Do not create a separate "source list" in the main answer. The system will append sources automatically.',
+            "- Keep the answer concise and evidence-based.",
+            "",
+            "[IRIS_SEARCH_RULES_KO]",
+            "- 검색 기반 질문은 아래 검색 결과에 있는 내용만 사용한다.",
+            "- 검색 결과에 없는 사실을 단정하지 않는다.",
+            '- 검색 결과가 질문 대상과 강하게 일치하지 않으면 "검색 결과 신뢰도 낮음"이라고 명시한다.',
+            '- 사용자가 제공한 회사명/대상 정보와 검색 결과가 충돌하면, 사용자 정보를 덮어쓰지 말고 "검색 결과만으로는 확인 불가"라고 말한다.',
+            "- 본문 안에 별도 출처 목록을 만들지 않는다. 출처는 시스템이 답변 끝에 자동으로 붙인다.",
+            "- 답변은 간결하고 근거 중심으로 작성한다.",
+        ]
+    )
 
 
 def _parse_bool_env(name: str, default: bool = True) -> bool:
@@ -111,25 +265,41 @@ async def call_l4_search(query: str, limit: int = 3) -> dict:
 def build_search_context(search_result: dict, max_results: int) -> str:
     if not search_result.get("ok"):
         return ""
+    rules = _iris_search_rules_text()
+    parts: List[str] = [rules]
+
+    if search_result.get("low_confidence"):
+        parts.append(
+            "\n".join(
+                [
+                    "[IRIS_SEARCH_CONFIDENCE]",
+                    "low_confidence: true",
+                    "reason: Search results do not strongly match the user query.",
+                    "instruction: Do not treat these results as confirmed facts. Explain that the search result is insufficient or mismatched.",
+                ]
+            )
+        )
+
     results = search_result.get("results") or []
-    if not results:
-        return ""
-    n = max(1, min(int(max_results), 20))
-    lines = [
-        "[IRIS_SEARCH_CONTEXT]",
-        "아래 내용은 Firecrawl 검색 결과입니다. 답변은 가능한 한 이 검색 결과를 근거로 작성하십시오.",
-        "검색 결과에 없는 내용을 확정적으로 말하지 마십시오.",
-    ]
-    for i, item in enumerate(results[:n], start=1):
-        title = item.get("title") or ""
-        url = item.get("url") or ""
-        summary = item.get("snippet") or item.get("description") or ""
-        lines.append(f"[{i}]")
-        lines.append(f"title: {title}")
-        lines.append(f"url: {url}")
-        lines.append(f"summary: {summary}")
-    lines.append("[/IRIS_SEARCH_CONTEXT]")
-    return "\n".join(lines)
+    if results:
+        n = max(1, min(int(max_results), 20))
+        lines = [
+            "[IRIS_SEARCH_CONTEXT]",
+            "아래 내용은 Firecrawl 검색 결과입니다. 답변은 가능한 한 이 검색 결과를 근거로 작성하십시오.",
+            "검색 결과에 없는 내용을 확정적으로 말하지 마십시오.",
+        ]
+        for i, item in enumerate(results[:n], start=1):
+            title = item.get("title") or ""
+            url = item.get("url") or ""
+            summary = item.get("snippet") or item.get("description") or ""
+            lines.append(f"[{i}]")
+            lines.append(f"title: {title}")
+            lines.append(f"url: {url}")
+            lines.append(f"summary: {summary}")
+        lines.append("[/IRIS_SEARCH_CONTEXT]")
+        parts.append("\n".join(lines))
+
+    return "\n\n".join(parts)
 
 
 def build_iris_source_footer(search_result: Optional[dict], max_results: int) -> str:
@@ -175,6 +345,10 @@ def build_iris_trace(
         "route": IRIS_TRACE_ROUTE,
         "stream": bool(stream),
         "matched_triggers": matched,
+        "search_low_confidence": False,
+        "search_relevance_warning": None,
+        "search_filtered_count": 0,
+        "search_original_count": 0,
     }
 
     if not search_used or search_result is None:
@@ -186,6 +360,11 @@ def build_iris_trace(
     out["search_ok"] = ok
     out["search_count"] = len(results)
     out["search_urls"] = urls
+    out["search_original_count"] = int(search_result.get("_iris_original_count", len(results) if ok else 0))
+    out["search_filtered_count"] = int(search_result.get("_iris_filtered_count", len(results) if ok else 0))
+    if search_result.get("low_confidence"):
+        out["search_low_confidence"] = True
+        out["search_relevance_warning"] = search_result.get("relevance_warning")
     if not ok:
         err = search_result.get("error")
         out["search_error"] = str(err) if err is not None else "search failed"
@@ -240,6 +419,8 @@ async def _ollama_chat_stream_sse(
     search_result: Optional[dict],
 ) -> AsyncIterator[bytes]:
     """Ollama /api/chat NDJSON(stream) → OpenAI 호환 SSE."""
+    any_think_strip = False
+    any_source_strip = False
     yield _sse_data(
         _openai_chunk(request_id, created, model, role="assistant", content=None)
     )
@@ -283,14 +464,19 @@ async def _ollama_chat_stream_sse(
                     last_content = cur if cur else last_content
 
                     if delta_text:
-                        yield _sse_data(
-                            _openai_chunk(
-                                request_id,
-                                created,
-                                model,
-                                content=delta_text,
+                        tmp_src = strip_model_generated_source_blocks(delta_text)
+                        any_source_strip = any_source_strip or (tmp_src != delta_text)
+                        tmp_out = strip_think_tags(tmp_src)
+                        any_think_strip = any_think_strip or (tmp_out != tmp_src)
+                        if tmp_out:
+                            yield _sse_data(
+                                _openai_chunk(
+                                    request_id,
+                                    created,
+                                    model,
+                                    content=tmp_out,
+                                )
                             )
-                        )
 
                     if done:
                         if search_used and settings.get("append_sources", True) and search_result is not None:
@@ -299,14 +485,16 @@ async def _ollama_chat_stream_sse(
                                 int(settings["max_results"]),
                             )
                             if footer:
-                                yield _sse_data(
-                                    _openai_chunk(
-                                        request_id,
-                                        created,
-                                        model,
-                                        content=footer,
+                                foot = strip_think_tags(footer)
+                                if foot:
+                                    yield _sse_data(
+                                        _openai_chunk(
+                                            request_id,
+                                            created,
+                                            model,
+                                            content=foot,
+                                        )
                                     )
-                                )
 
                         fr = obj.get("done_reason") or "stop"
                         last_chunk = _openai_chunk(
@@ -318,6 +506,10 @@ async def _ollama_chat_stream_sse(
                         last_chunk["iris_trace"] = iris_trace
                         yield _sse_data(last_chunk)
                         yield b"data: [DONE]\n\n"
+                        print(
+                            f"[L2] content cleanup: stripped_think={any_think_strip} stripped_sources={any_source_strip}",
+                            flush=True,
+                        )
                         print("[L2] response ok", flush=True)
                         return
     except httpx.HTTPStatusError as e:
@@ -520,13 +712,22 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
             last_user_content,
             limit=int(settings["max_results"]),
         )
+        ok = bool(search_result.get("ok"))
+        cnt = len(search_result.get("results") or [])
+        print(f"[L2] L4-search result: ok={ok} count={cnt}", flush=True)
+        if ok:
+            search_result = filter_search_results(search_result, last_user_content)
+            oc = int(search_result.get("_iris_original_count", 0))
+            fc = int(search_result.get("_iris_filtered_count", 0))
+            lc = bool(search_result.get("low_confidence"))
+            print(
+                f"[L2] search relevance: original_count={oc} filtered_count={fc} low_confidence={lc}",
+                flush=True,
+            )
         search_context = build_search_context(
             search_result,
             int(settings["max_results"]),
         )
-        ok = bool(search_result.get("ok"))
-        cnt = len(search_result.get("results") or [])
-        print(f"[L2] L4-search result: ok={ok} count={cnt}", flush=True)
 
     messages_for_ollama: List[Dict[str, Any]] = [m.model_dump() for m in req.messages]
     if search_context:
@@ -585,9 +786,16 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         )
         r.raise_for_status()
         data = r.json()
-        content = (
-            data.get("message", {}) or {}
-        ).get("content", "")
+        raw_content = (data.get("message", {}) or {}).get("content", "")
+        raw_content = "" if raw_content is None else str(raw_content)
+        no_sources = strip_model_generated_source_blocks(raw_content)
+        stripped_sources = raw_content != no_sources
+        content = strip_think_tags(no_sources)
+        stripped_think = no_sources != content
+        print(
+            f"[L2] content cleanup: stripped_think={stripped_think} stripped_sources={stripped_sources}",
+            flush=True,
+        )
         if search_used and settings.get("append_sources", True):
             footer = build_iris_source_footer(
                 search_result,
