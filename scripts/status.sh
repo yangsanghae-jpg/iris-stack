@@ -10,6 +10,18 @@ echo
 echo "== Docker Containers =="
 docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 echo
+echo "== IRIS Stack Services =="
+docker compose ps
+echo ""
+echo "== L2 Health =="
+curl -sS "http://127.0.0.1:${L2_GATEWAY_PORT:-8010}/health" || true
+echo ""
+echo "== L4 Health =="
+curl -sS "http://127.0.0.1:${L4_SEARCH_PORT:-8020}/health" || true
+echo ""
+echo "== L2 Models sample =="
+curl -sS "http://127.0.0.1:${L2_GATEWAY_PORT:-8010}/v1/models" | head -500 || true
+echo
 echo "== Docker System DF =="
 docker system df
 echo
