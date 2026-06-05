@@ -1,0 +1,13 @@
+# macOS Docker Desktop override — cAdvisor volume 최소화
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.observability.mac.yml up -d cadvisor
+#
+# Note: Docker Desktop overlayfs storage may still block per-container metrics
+# (see observability/cadvisor_on_macos.md). Linux VM 호스트에서는 이 파일 없이 기동.
+
+services:
+  cadvisor:
+    volumes:
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro

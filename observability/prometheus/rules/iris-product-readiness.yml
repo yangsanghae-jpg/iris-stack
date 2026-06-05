@@ -1,0 +1,42 @@
+groups:
+  - name: iris-product-readiness
+    interval: 15s
+    rules:
+      # 카드별 본체 readiness — body role probe들이 모두 UP이면 1
+      - record: iris:card_body_ready
+        expr: min by (card) (probe_success{job="iris-services-blackbox", role="body"})
+
+      # 카드별 의존 readiness — dependency role probe들이 모두 UP이면 1
+      # 의존이 없는 카드는 결과 없음 (dashboard에서 fallback 처리)
+      - record: iris:card_deps_ready
+        expr: min by (card) (probe_success{job="iris-services-blackbox", role="dependency"})
+
+      # 카드 종합 readiness:
+      #   1.0 = 본체 UP + (의존 전부 UP  OR  의존 없음)   → ✅
+      #   0.5 = 본체 UP + 의존 일부 DOWN                  → ⚠️
+      #   0.0 = 본체 DOWN                                  → ❌
+      - record: iris:card_ready_v2
+        expr: |
+          (
+              (iris:card_body_ready == 1)
+            * on(card) group_left()
+              (iris:card_deps_ready == 1)
+          )
+          or
+          (
+              (iris:card_body_ready == 1)
+            unless on(card)
+              iris:card_deps_ready
+          )
+          or
+          (
+            (
+                (iris:card_body_ready == 1)
+              * on(card) group_left()
+                (iris:card_deps_ready < 1)
+            ) * 0.5
+          )
+          or
+          (
+            (iris:card_body_ready == 0) * 0
+          )

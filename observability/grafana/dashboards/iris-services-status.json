@@ -1,0 +1,234 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "서비스 상태 (UP / DOWN)",
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "probe_success{job=\"iris-services-blackbox\"}",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]},
+          "color": {"mode": "thresholds"}
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto"
+      }
+    },
+    {
+      "type": "table",
+      "title": "서비스 요약 (마지막 상태 / 응답시간 / HTTP 코드)",
+      "gridPos": {"h": 11, "w": 24, "x": 0, "y": 10},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "probe_success{job=\"iris-services-blackbox\"}",
+          "refId": "A",
+          "legendFormat": "",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "probe_duration_seconds{job=\"iris-services-blackbox\"}",
+          "refId": "B",
+          "legendFormat": "",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "probe_http_status_code{job=\"iris-services-blackbox\"}",
+          "refId": "C",
+          "legendFormat": "",
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {"id": "joinByField", "options": {"byField": "instance", "mode": "outer"}},
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true, "Time 1": true, "Time 2": true, "Time 3": true,
+              "job": true, "job 1": true, "job 2": true, "job 3": true,
+              "__name__": true, "__name__ 1": true, "__name__ 2": true, "__name__ 3": true,
+              "kind 2": true, "kind 3": true,
+              "layer 2": true, "layer 3": true,
+              "service 2": true, "service 3": true,
+              "note 2": true, "note 3": true
+            },
+            "renameByName": {
+              "service 1": "service",
+              "layer 1": "layer",
+              "kind 1": "kind",
+              "note 1": "note",
+              "Value #A": "UP",
+              "Value #B": "응답(s)",
+              "Value #C": "HTTP"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "center", "displayMode": "auto"}
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "UP"},
+            "properties": [
+              {"id": "mappings", "value": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}]},
+              {"id": "custom.cellOptions", "value": {"type": "color-background"}},
+              {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}
+            ]
+          },
+          {
+            "matcher": {"id": "byName", "options": "응답(s)"},
+            "properties": [{"id": "unit", "value": "s"}]
+          }
+        ]
+      },
+      "options": {"showHeader": true, "footer": {"show": false}}
+    },
+    {
+      "type": "timeseries",
+      "title": "최근 1시간 가용성 (1=UP)",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 21},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "probe_success{job=\"iris-services-blackbox\"}",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "custom": {"drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 30, "spanNulls": false}
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Probe 응답시간 (s)",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 21},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "probe_duration_seconds{job=\"iris-services-blackbox\"}",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "type": "stat",
+      "title": "최근 1시간 가용률 (%)",
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 30},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "avg_over_time(probe_success{job=\"iris-services-blackbox\"}[1h]) * 100",
+          "refId": "A",
+          "legendFormat": "{{service}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null},
+            {"color": "orange", "value": 80},
+            {"color": "yellow", "value": 95},
+            {"color": "green", "value": 99}
+          ]}
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "컨테이너 재시작 (최근 1h)",
+      "gridPos": {"h": 7, "w": 24, "x": 0, "y": 37},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "max by (container_label_com_docker_compose_service) (changes(container_start_time_seconds{container_label_com_docker_compose_project=~\"iris-stack|iris-memory\"}[1h]))",
+          "refId": "A",
+          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "yellow", "value": 1},
+            {"color": "red", "value": 3}
+          ]}
+        }
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center"
+      }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["iris", "raw-probe", "deprecated"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "IRIS — Raw Probe (디버그용)",
+  "uid": "iris-services-status",
+  "version": 1,
+  "weekStart": ""
+}

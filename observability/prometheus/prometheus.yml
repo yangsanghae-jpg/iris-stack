@@ -1,0 +1,96 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: iris-stack
+    site: host-m5
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  - job_name: node-exporter
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # =========================================================================
+  # iris-services-blackbox (제품 readiness probe)
+  # 라벨 구조:
+  #   card     = open-webui | l2-gateway | iris-memory | memory-admin |
+  #              l4-search | iris-claw | diagnosis
+  #   surface  = web | api | client | gateway
+  #   role     = body | dependency
+  #   check    = liveness | functional
+  # =========================================================================
+  - job_name: iris-services-blackbox
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      # ----- A. Open WebUI (Chat) -----
+      - targets: ['http://host.docker.internal:3000/health']
+        labels: {card: open-webui, service: open-webui, surface: web,     role: body,       check: liveness, kind: container, browse_url: 'http://localhost:3000'}
+      - targets: ['http://host.docker.internal:11434/api/tags']
+        labels: {card: open-webui, service: ollama,     surface: api,     role: dependency, check: liveness, kind: host, browse_url: 'http://localhost:11434'}
+      - targets: ['http://l2-gateway:8010/health']
+        labels: {card: open-webui, service: l2-gateway, surface: gateway, role: dependency, check: liveness, kind: container, browse_url: 'http://localhost:8011'}
+
+      # ----- B. L2 Gateway (단독 카드) -----
+      - targets: ['http://l2-gateway:8010/health']
+        labels: {card: l2-gateway, service: l2-gateway, surface: api,     role: body,       check: liveness, kind: container, browse_url: 'http://localhost:8011'}
+      - targets: ['http://host.docker.internal:11434/api/tags']
+        labels: {card: l2-gateway, service: ollama,     surface: api,     role: dependency, check: liveness, kind: host, browse_url: 'http://localhost:11434'}
+      - targets: ['http://l4-search:8020/health']
+        labels: {card: l2-gateway, service: l4-search,  surface: api,     role: dependency, check: liveness, kind: container, browse_url: 'http://localhost:8020/health'}
+      - targets: ['http://host.docker.internal:8001/health']
+        labels: {card: l2-gateway, service: iris-memory, surface: api,    role: dependency, check: liveness, kind: host, browse_url: 'http://localhost:8001'}
+
+      # ----- C. iris-memory -----
+      - targets: ['http://host.docker.internal:8001/health']
+        labels: {card: iris-memory, service: iris-memory, surface: api, role: body, check: liveness, kind: host, browse_url: 'http://localhost:8001'}
+
+      # ----- D. memory-admin -----
+      - targets: ['http://memory-admin:18020/health']
+        labels: {card: memory-admin, service: memory-admin, surface: web, role: body,       check: liveness, kind: container, browse_url: 'http://localhost:18020'}
+      - targets: ['http://host.docker.internal:8001/health']
+        labels: {card: memory-admin, service: iris-memory,  surface: api, role: dependency, check: liveness, kind: host, browse_url: 'http://localhost:8001'}
+
+      # ----- E. L4-search -----
+      - targets: ['http://l4-search:8020/health']
+        labels: {card: l4-search, service: l4-search, surface: api, role: body, check: liveness, kind: container, browse_url: 'http://localhost:8020/health'}
+
+      # ----- F. iris-claw (LAN bind, host publish) -----
+      - targets: ['http://host.docker.internal:18789/']
+        labels: {card: iris-claw, service: iris-claw, surface: api, role: body,       check: liveness, kind: host, browse_url: 'http://localhost:18789'}
+      - targets: ['http://host.docker.internal:11434/api/tags']
+        labels: {card: iris-claw, service: ollama,    surface: api, role: dependency, check: liveness, kind: host, browse_url: 'http://localhost:11434'}
+
+      # ----- G. diagnosis-tool (API + UI + llm-gateway) -----
+      - targets: ['http://host.docker.internal:8000/health']
+        labels: {card: diagnosis, service: diagnosis-api,  surface: api,     role: body,       check: liveness, kind: host, browse_url: 'http://localhost:8000'}
+      - targets: ['http://host.docker.internal:3001/']
+        labels: {card: diagnosis, service: diagnosis-ui,   surface: client,  role: body,       check: liveness, kind: host, browse_url: 'http://localhost:3001'}
+      - targets: ['http://host.docker.internal:8010/ready']
+        labels: {card: diagnosis, service: llm-gateway,    surface: gateway, role: dependency, check: liveness, kind: host, browse_url: 'http://localhost:8010'}
+      - targets: ['http://host.docker.internal:11434/api/tags']
+        labels: {card: diagnosis, service: ollama,         surface: api,     role: dependency, check: liveness, kind: host, browse_url: 'http://localhost:11434'}
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  - job_name: blackbox-exporter
+    static_configs:
+      - targets: ['blackbox-exporter:9115']

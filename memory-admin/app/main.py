@@ -14,6 +14,7 @@ from pydantic import BaseModel
 APP_NAME = "iris-memory-admin"
 IRIS_MEMORY_BASE_URL = os.getenv("IRIS_MEMORY_BASE_URL", "http://host.docker.internal:8001").rstrip("/")
 IRIS_MEMORY_DB_PATH = os.getenv("IRIS_MEMORY_DB_PATH", "/app/data/memory.db")
+L2_GATEWAY_BASE_URL = os.getenv("L2_GATEWAY_BASE_URL", "http://host.docker.internal:8010").rstrip("/")
 
 app = FastAPI(title=APP_NAME)
 templates = Jinja2Templates(directory="/app/app/templates")
@@ -159,6 +160,30 @@ def _memory_health_ok() -> bool:
         return False
 
 
+def _fetch_profile_files() -> dict[str, Any]:
+    try:
+        r = requests.get(f"{L2_GATEWAY_BASE_URL}/memory/files", timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {"ok": False, "files": []}
+
+
+def _fetch_profile_file(filename: str) -> dict[str, Any]:
+    try:
+        r = requests.get(f"{L2_GATEWAY_BASE_URL}/memory/files/{filename}", timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, dict):
+            return data
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": False, "error": "invalid response"}
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
@@ -269,3 +294,13 @@ def api_prefetch_preview(body: PrefetchPreviewRequest) -> dict[str, Any]:
             "error": str(e),
             "raw": {},
         }
+
+
+@app.get("/api/profile-files")
+def api_profile_files() -> dict[str, Any]:
+    return _fetch_profile_files()
+
+
+@app.get("/api/profile-files/{filename}")
+def api_profile_file(filename: str) -> dict[str, Any]:
+    return _fetch_profile_file(filename)

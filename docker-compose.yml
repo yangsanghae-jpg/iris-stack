@@ -8,18 +8,24 @@ services:
     image: ghcr.io/open-webui/open-webui:main
     container_name: iris-open-webui
     restart: unless-stopped
+    # OpenWebUI → l2-gateway (OpenAI 호환) → Ollama + L4 search 우회
     depends_on:
       - l2-gateway
     ports:
       - "${OPEN_WEBUI_PORT:-3000}:8080"
     environment:
-      # Chat/completions must go through L2 (search + iris_trace); do not expose host Ollama API in UI.
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # A안: Ollama 직결 비활성화 — 드롭다운에 직결 모델이 노출되지 않게 막아 L2 우회를 방지.
+      #       L2가 /v1/models로 같은 모델 풀을 OpenAI 라우트로 노출하므로 모델 가용성은 동일.
       - ENABLE_OLLAMA_API=false
       - ENABLE_OPENAI_API=true
       - OPENAI_API_BASE_URL=http://l2-gateway:8010/v1
       - OPENAI_API_KEY=iris-local
       - WEBUI_AUTH=false
+      # B안: 기본 모델 고정 — 새 채팅이 항상 L2 경유 qwen3:30b로 시작.
+      - DEFAULT_MODELS=qwen3:30b
+      - DEFAULT_PINNED_MODELS=qwen3:30b,qwen3-coder:30b,gemma4:31b
+      - ENABLE_FOLLOW_UP_GENERATION=false
+      - DEFAULT_PROMPT_SUGGESTIONS=[]
     volumes:
       - iris-open-webui-data:/app/backend/data
     extra_hosts:
@@ -52,12 +58,17 @@ services:
       IRIS_APPEND_SEARCH_SOURCES: ${IRIS_APPEND_SEARCH_SOURCES:-true}
       IRIS_SEARCH_MAX_RESULTS: ${IRIS_SEARCH_MAX_RESULTS:-3}
       IRIS_SEARCH_TRIGGERS: ${IRIS_SEARCH_TRIGGERS:-}
+      # iris-memory: .env의 IRIS_MEMORY_ENABLED / IRIS_MEMORY_BASE_URL 그대로 사용
       IRIS_MEMORY_ENABLED: ${IRIS_MEMORY_ENABLED:-true}
       IRIS_MEMORY_BASE_URL: ${IRIS_MEMORY_BASE_URL:-http://host.docker.internal:8001}
       IRIS_MEMORY_USER_ID: ${IRIS_MEMORY_USER_ID:-iris}
       IRIS_MEMORY_PROJECT_ID: ${IRIS_MEMORY_PROJECT_ID:-iris-stack}
+      IRIS_MEMORY_PROFILE_ENABLED: ${IRIS_MEMORY_PROFILE_ENABLED:-false}
+      IRIS_MEMORY_PROFILE_DIR: ${IRIS_MEMORY_PROFILE_DIR:-/app/memory-profiles/default}
     ports:
       - "${L2_GATEWAY_PORT}:8010"
+    volumes:
+      - ./memory-profiles:/app/memory-profiles:ro
     networks:
       - iris-net
   memory-admin:
@@ -74,10 +85,65 @@ services:
       - /Users/iris/Documents/0Dev/iris-memory/data:/app/data:ro
     networks:
       - iris-net
+
+  # Phase 0.5 — L4-K Knowledge Center (V2.5.1)
+  # 두 서비스가 같은 이미지를 공유, command만 다름.
+  # knowledge/.nosync (M5 로컬 _index.db) + ~/iris-local/storage (M5 telemetry/history) 마운트.
+  iris-k5-wiki:
+    build:
+      context: ../iris-system
+    image: iris-k5-system:local
+    container_name: iris-k5-wiki
+    restart: unless-stopped
+    ports:
+      - "${K5_WIKI_PORT:-18081}:18081"
+    environment:
+      OLLAMA_URL: ${K5_OLLAMA_URL:-http://host.docker.internal:11434/api/generate}
+      WIKI_MODEL: ${K5_WIKI_MODEL:-qwen3:30b}
+      WIKI_QUERY_TOP_K: ${K5_QUERY_TOP_K:-5}
+      KNOWLEDGE_BASE_PATH: /app/knowledge
+      STORAGE_PATH: /app/storage
+    volumes:
+      # knowledge/.nosync에 실 _index.db가 있고 symlink로 노출됨.
+      # 호스트의 knowledge 전체를 마운트 — symlink가 따라가짐.
+      - /Users/iris/Documents/0Dev/iris-system/knowledge:/app/knowledge
+      # storage는 ~/iris-local/storage → symlink가 0Dev 안에 있으나 컨테이너에서는 호스트 절대경로 마운트.
+      - /Users/iris/iris-local/storage:/app/storage
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - iris-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18081/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  iris-k5-router:
+    image: iris-k5-system:local
+    container_name: iris-k5-router
+    restart: unless-stopped
+    depends_on:
+      iris-k5-wiki:
+        condition: service_started
+    ports:
+      - "${K5_ROUTER_PORT:-18080}:18080"
+    environment:
+      WIKI_BASE_URL: http://iris-k5-wiki:18081
+    command: ["uvicorn", "apps.router.server:app", "--host", "0.0.0.0", "--port", "18080"]
+    networks:
+      - iris-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 networks:
   iris-net:
     name: iris-net
-    driver: bridge
+    external: true
 volumes:
   iris-open-webui-data:
     name: iris-open-webui-data

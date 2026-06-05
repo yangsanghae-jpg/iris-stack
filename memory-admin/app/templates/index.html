@@ -30,52 +30,16 @@
     <p class="muted">app={{ app_name }} | memory={{ memory_base_url }} | db={{ db_path }}</p>
 
     <div class="card">
-      <h2>Status</h2>
-      <div id="status"></div>
-    </div>
-
-    <div class="card">
-      <h2>Prefetch Preview</h2>
+      <h2>Memory Profile Files <span class="muted">(Read only)</span></h2>
       <div class="grid">
         <div>
-          <label>user_id</label>
-          <input id="userId" value="iris" />
+          <div id="profileFileList"></div>
         </div>
         <div>
-          <label>project_id</label>
-          <input id="projectId" value="iris-stack" />
+          <div class="muted" id="profileFileMeta">파일을 선택하세요.</div>
+          <pre class="mono" id="profileFileContent"></pre>
         </div>
       </div>
-      <div style="margin-top:10px;">
-        <label>query</label>
-        <textarea id="query" rows="3">현재 IRIS 시스템 상태</textarea>
-      </div>
-      <div style="margin-top:10px;">
-        <button id="runPrefetch">Run Prefetch</button>
-      </div>
-      <div style="margin-top:10px;">
-        <div class="mono" id="prefetchPreview"></div>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Recent Task Histories</h2>
-      <div style="overflow:auto;"><table id="tasksTable"></table></div>
-    </div>
-
-    <div class="card">
-      <h2>Project Memories</h2>
-      <div style="overflow:auto;"><table id="projectTable"></table></div>
-    </div>
-
-    <div class="card">
-      <h2>Skill Memories</h2>
-      <div style="overflow:auto;"><table id="skillTable"></table></div>
-    </div>
-
-    <div class="card">
-      <h2>User Profiles</h2>
-      <div style="overflow:auto;"><table id="profileTable"></table></div>
     </div>
   </div>
 
@@ -85,60 +49,35 @@
       return String(v).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
     }
 
-    function renderTable(elId, rows) {
-      const el = document.getElementById(elId);
-      if (!rows || rows.length === 0) {
-        el.innerHTML = "<tr><td>no data</td></tr>";
+    async function loadProfileFiles() {
+      const res = await fetch("/api/profile-files");
+      const data = await res.json();
+      const files = data.files || [];
+      const wrap = document.getElementById("profileFileList");
+      if (!files.length) {
+        wrap.innerHTML = "<div class='muted'>파일 목록을 불러오지 못했습니다.</div>";
         return;
       }
-      const keys = Object.keys(rows[0]);
-      let html = "<tr>" + keys.map(k => `<th>${esc(k)}</th>`).join("") + "</tr>";
-      for (const row of rows) {
-        html += "<tr>" + keys.map(k => {
-          const val = row[k];
-          const content = typeof val === "object" ? JSON.stringify(val, null, 2) : String(val ?? "");
-          return `<td><div class="text-scroll">${esc(content)}</div></td>`;
-        }).join("") + "</tr>";
+      wrap.innerHTML = files.map(f => `
+        <button style="margin-bottom:8px;text-align:left;" data-fn="${esc(f.name)}">
+          <div><strong>${esc(f.name)}</strong></div>
+          <div class="muted">${esc(f.role || "")} / ${esc(f.size)} bytes</div>
+        </button>
+      `).join("");
+
+      for (const btn of wrap.querySelectorAll("button[data-fn]")) {
+        btn.addEventListener("click", async (e) => {
+          const fn = e.currentTarget.getAttribute("data-fn");
+          const r = await fetch(`/api/profile-files/${encodeURIComponent(fn)}`);
+          const d = await r.json();
+          document.getElementById("profileFileMeta").textContent =
+            d.ok ? `${d.name} | ${d.role} | Read only` : `읽기 실패: ${d.error || "unknown"}`;
+          document.getElementById("profileFileContent").textContent = d.ok ? (d.content || "") : "";
+        });
       }
-      el.innerHTML = html;
     }
 
-    async function loadSummary() {
-      const res = await fetch("/api/summary");
-      const data = await res.json();
-      const okText = data.ok ? '<span class="ok">OK</span>' : '<span class="bad">FAIL</span>';
-      const statusHtml = `
-        <div>Summary: ${okText}</div>
-        <div>DB path: ${esc(data.db_path || "")}</div>
-        <div>table counts: ${esc(JSON.stringify(data.tables || {}))}</div>
-      `;
-      document.getElementById("status").innerHTML = statusHtml;
-      renderTable("tasksTable", data.recent_tasks || []);
-      renderTable("projectTable", data.project_memories || []);
-      renderTable("skillTable", data.skill_memories || []);
-      renderTable("profileTable", data.user_profiles || []);
-    }
-
-    async function runPrefetch() {
-      const user_id = document.getElementById("userId").value.trim();
-      const project_id = document.getElementById("projectId").value.trim();
-      const query = document.getElementById("query").value.trim();
-      const res = await fetch("/api/prefetch-preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id, project_id, query })
-      });
-      const data = await res.json();
-      document.getElementById("prefetchPreview").textContent = JSON.stringify({
-        ok: data.ok,
-        memory_used: data.memory_used,
-        memory_context_preview: data.memory_context_preview,
-        raw_keys: Object.keys(data.raw || {})
-      }, null, 2);
-    }
-
-    document.getElementById("runPrefetch").addEventListener("click", runPrefetch);
-    loadSummary();
+    loadProfileFiles();
   </script>
 </body>
 </html>

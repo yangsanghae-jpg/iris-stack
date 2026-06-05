@@ -3,6 +3,7 @@ import os
 import re
 import time
 import uuid
+from pathlib import Path
 import httpx
 import requests
 from fastapi import FastAPI, HTTPException
@@ -34,6 +35,28 @@ _DEFAULT_TRIGGERS_CSV = (
 )
 
 IRIS_TRACE_ROUTE = "openwebui -> l2 -> l4-search -> ollama"
+MEMORY_PROFILE_NAME = os.getenv("IRIS_MEMORY_PROFILE", "default")
+MEMORY_PROFILES_BASE_DIR = Path("/app/memory-profiles")
+MEMORY_PROFILE_DIR = MEMORY_PROFILES_BASE_DIR / MEMORY_PROFILE_NAME
+IRIS_MEMORY_PROFILE_DIR = Path(os.getenv("IRIS_MEMORY_PROFILE_DIR", str(MEMORY_PROFILE_DIR)))
+MEMORY_FILE_ROLES: Dict[str, str] = {
+    "IDENTITY.md": "비서의 정체성",
+    "USER.md": "사용자 이해",
+    "SOUL.md": "성향/말투",
+    "AGENTS.md": "행동 규칙",
+    "TOOLS.md": "도구 사용 규칙",
+    "HEARTBEAT.md": "상태 점검",
+    "BOOTSTRAP.md": "시작 컨텍스트",
+}
+MEMORY_PROFILE_FILE_ORDER: List[str] = [
+    "IDENTITY.md",
+    "USER.md",
+    "SOUL.md",
+    "AGENTS.md",
+    "TOOLS.md",
+    "HEARTBEAT.md",
+    "BOOTSTRAP.md",
+]
 
 _THINK_BLOCK_RE = re.compile(
     r"<think>[\s\S]*?</think>",
@@ -178,6 +201,74 @@ _META_PARAGRAPH_HINTS = (
     "i should inform the user",
     "no information about",
 )
+
+
+_REASONING_PREFIXES_EN = (
+    "okay",
+    "wait",
+    "let me",
+    "looking at",
+    "check ",
+    "i think",
+    "i should",
+    "i need to",
+    "so the answer",
+    "so the final answer",
+    "final decision",
+    "the answer should",
+)
+
+
+def _is_reasoning_paragraph(p: str) -> bool:
+    t = (p or "").strip()
+    if not t:
+        return False
+    low = t.lower()
+    hangul = sum(1 for c in t if "\uac00" <= c <= "\ud7af")
+    alpha = sum(1 for c in t if ("a" <= c.lower() <= "z"))
+    # Strong English self-reasoning cues.
+    if any(low.startswith(k) for k in _REASONING_PREFIXES_EN):
+        return True
+    if "the user" in low and ("question" in low or "asking" in low):
+        return True
+    if "so the answer is" in low or "final answer" in low:
+        return True
+    if alpha >= 20 and hangul < 6 and (" i " in f" {low} " or "user" in low):
+        return True
+    return False
+
+
+def _extract_final_answer_block(text: str) -> str:
+    """
+    If verbose chain-of-thought leaked into content, keep only the final answer block.
+    """
+    s = (text or "").strip()
+    if not s:
+        return s
+    blocks = [b.strip() for b in re.split(r"\n{2,}", s) if b.strip()]
+    if len(blocks) < 2:
+        return s
+    reasoning_blocks = sum(1 for b in blocks[:-1] if _is_reasoning_paragraph(b))
+    # Be conservative: only activate when there are strong "final answer" scaffolding cues.
+    scaffold_cue = any(
+        ("final answer" in b.lower()) or ("so the answer is" in b.lower()) for b in blocks
+    )
+    if reasoning_blocks < 2 or not scaffold_cue:
+        return s
+    # Pick the last non-reasoning block as the actual user-visible answer.
+    picked = blocks[-1]
+    for b in reversed(blocks):
+        if not _is_reasoning_paragraph(b):
+            picked = b
+            break
+    # Strip scaffolding prefixes if any remain.
+    picked = re.sub(
+        r"^(so\s+the\s+(final\s+)?answer\s+is\s*:\s*|the\s+answer\s+is\s*:\s*)",
+        "",
+        picked,
+        flags=re.IGNORECASE,
+    ).strip()
+    return picked if picked else s
 
 
 def _strip_english_meta_paragraphs(s: str) -> str:
@@ -400,12 +491,14 @@ def sanitize_final_answer(
     a = strip_thinking_content(raw)
     b = strip_model_generated_source_blocks(a)
     c = normalize_answer_markdown(b)
+    d = _extract_final_answer_block(c)
     flags = {
         "stripped_think": a != raw,
         "stripped_sources": b != a,
         "normalized_md": c != b,
+        "final_block_extracted": d != c,
     }
-    return c.strip(), flags
+    return d.strip(), flags
 
 
 def _chunk_text_for_sse(text: str, max_chars: int = 900) -> List[str]:
@@ -436,7 +529,7 @@ def _iris_search_rules_text() -> str:
             "- If the search results do not strongly match the user's target, say that the search result is low confidence.",
             "- If the user provided company/entity information conflicts with the search results, do not overwrite the user's information. State that the search results are insufficient or mismatched.",
             '- Do not create a separate "source list" in the main answer. The system will append sources automatically.',
-            "- Keep the answer concise and evidence-based.",
+            "- Keep the answer evidence-based. Match response depth to user intent; do not over-compress analytical questions.",
             "",
             "[IRIS_SEARCH_RULES_KO]",
             "- 검색 기반 질문은 아래 검색 결과에 있는 내용만 사용한다.",
@@ -444,7 +537,19 @@ def _iris_search_rules_text() -> str:
             '- 검색 결과가 질문 대상과 강하게 일치하지 않으면 "검색 결과 신뢰도 낮음"이라고 명시한다.',
             '- 사용자가 제공한 회사명/대상 정보와 검색 결과가 충돌하면, 사용자 정보를 덮어쓰지 말고 "검색 결과만으로는 확인 불가"라고 말한다.',
             "- 본문 안에 별도 출처 목록을 만들지 않는다. 출처는 시스템이 답변 끝에 자동으로 붙인다.",
-            "- 답변은 간결하고 근거 중심으로 작성한다.",
+            "- 답변은 근거 중심으로 작성하되, 질문 의도에 맞게 깊이를 조절한다. 분석 질문을 과도하게 축약하지 않는다.",
+        ]
+    )
+
+
+def _iris_answer_style_rules_text() -> str:
+    return "\n".join(
+        [
+            "[IRIS_ANSWER_STYLE]",
+            "- Output only the final answer for the user.",
+            "- Do not include analysis, chain-of-thought, planning, or internal reasoning.",
+            "- Match response depth to user intent. For analysis/architecture/comparison requests, provide sufficient depth; for concise requests, keep it brief.",
+            "[/IRIS_ANSWER_STYLE]",
         ]
     )
 
@@ -462,6 +567,42 @@ def _parse_max_results() -> int:
     except ValueError:
         n = 3
     return max(1, min(n, 20))
+
+
+def _load_memory_profile_bundle() -> dict:
+    enabled = _parse_bool_env("IRIS_MEMORY_PROFILE_ENABLED", True)
+    if not enabled:
+        return {"used": False, "files": [], "chars": 0, "text": "", "error": "disabled"}
+    base_dir = Path(os.getenv("IRIS_MEMORY_PROFILE_DIR", str(IRIS_MEMORY_PROFILE_DIR)))
+    loaded_files: List[str] = []
+    total_chars = 0
+    parts: List[str] = [
+        "[IRIS_MEMORY_PROFILE]",
+        "아래는 IRIS 기본 기억 파일이다.",
+        "이 내용은 시스템 파일이 아니라, 사용자 맞춤 비서의 기본 기억/성향/운영 규칙이다.",
+    ]
+    for name in MEMORY_PROFILE_FILE_ORDER:
+        p = base_dir / name
+        if not p.exists() or not p.is_file():
+            continue
+        try:
+            content = p.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        loaded_files.append(name)
+        total_chars += len(content)
+        parts.append(f"--- {name} ---")
+        parts.append(content)
+    if not loaded_files:
+        return {"used": False, "files": [], "chars": 0, "text": "", "error": "no readable profile files"}
+    parts.append("[/IRIS_MEMORY_PROFILE]")
+    return {
+        "used": True,
+        "files": loaded_files,
+        "chars": total_chars,
+        "text": "\n".join(parts),
+        "error": None,
+    }
 
 
 def get_iris_search_settings() -> Dict[str, Any]:
@@ -611,9 +752,10 @@ def build_memory_context(memory_result: dict) -> str:
         for row in tasks[:12]:
             if not isinstance(row, dict):
                 continue
+            # Avoid injecting old verbose assistant text from task summaries.
             lines.append(
                 f"- {row.get('task_id', '')}: {(row.get('title') or '')[:120]} "
-                f"(status={row.get('status', '')}) summary={(row.get('summary') or '')[:200]}"
+                f"(status={row.get('status', '')})"
             )
     if skills:
         lines.append("[reusable skills]")
@@ -653,7 +795,11 @@ async def call_memory_writeback(
     title = (user_message or "").strip().split("\n")[0][:200]
     if not title:
         title = "chat turn"
-    summary = f"user: {(user_message or '')[:1500]}\n\nassistant: {(assistant_content or '')[:2500]}"
+    cleaned_assistant = strip_thinking_content(assistant_content or "")
+    cleaned_assistant = strip_model_generated_source_blocks(cleaned_assistant).strip()
+    if not cleaned_assistant:
+        return {"ok": False, "error": "empty after strip; skipping writeback"}
+    summary = f"user: {(user_message or '')[:1500]}\n\nassistant: {cleaned_assistant[:2500]}"
     if len(summary) > 4000:
         summary = summary[:4000]
     body = {
@@ -794,6 +940,10 @@ def build_iris_trace(
     memory_context_chars: int,
     memory_writeback_ok: bool = False,
     memory_error: Optional[str] = None,
+    memory_profile_used: bool = False,
+    memory_profile_files: Optional[List[str]] = None,
+    memory_profile_chars: int = 0,
+    memory_profile_error: Optional[str] = None,
 ) -> dict:
     """OpenWebUI /v1/chat/completions용 표준 iris_trace (stream 시 마지막 chunk에만 첨부)."""
     cap = max(1, min(int(max_results), 20))
@@ -820,6 +970,10 @@ def build_iris_trace(
         "memory_context_chars": int(memory_context_chars),
         "memory_writeback_ok": bool(memory_writeback_ok),
         "memory_error": memory_error,
+        "memory_profile_used": bool(memory_profile_used),
+        "memory_profile_files": list(memory_profile_files or []),
+        "memory_profile_chars": int(memory_profile_chars),
+        "memory_profile_error": memory_profile_error,
     }
 
     if not search_used or search_result is None:
@@ -1051,6 +1205,30 @@ def get_last_user_content(messages: List[ChatMessage]) -> str:
     return ""
 
 
+def _is_qwen3_model(model_name: str) -> bool:
+    m = (model_name or "").lower()
+    return m.startswith("qwen3") or "/qwen3" in m
+
+
+def _apply_no_think_prefix_to_last_user(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    updated: List[Dict[str, Any]] = [dict(m) for m in messages]
+    for i in range(len(updated) - 1, -1, -1):
+        if str(updated[i].get("role", "")).lower() != "user":
+            continue
+        content = str(updated[i].get("content", "") or "")
+        if "/no_think" in content:
+            return updated
+        updated[i]["content"] = f"/no_think\n{content}".strip()
+        return updated
+    return updated
+
+
+def _memory_profile_file_path(filename: str) -> Path:
+    if filename not in MEMORY_FILE_ROLES:
+        raise HTTPException(status_code=404, detail="memory profile file not found")
+    return MEMORY_PROFILE_DIR / filename
+
+
 @app.get("/search/health")
 def search_health_proxy():
     try:
@@ -1185,6 +1363,12 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         options["num_predict"] = req.max_tokens
     if req.top_p is not None:
         options["top_p"] = req.top_p
+    # Keep runtime defaults aligned with direct Ollama tests when UI does not send options.
+    options.setdefault("num_ctx", 32768)
+    options.setdefault("num_predict", 4096)
+    options.setdefault("temperature", 0.5)
+    options.setdefault("top_p", 0.9)
+    options.setdefault("repeat_penalty", 1.05)
 
     settings = get_iris_search_settings()
     mem_cfg = get_memory_settings()
@@ -1211,6 +1395,11 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
 
     search_result: Optional[dict] = None
     search_context = ""
+    memory_profile_bundle = _load_memory_profile_bundle()
+    print(
+        f"[L2] memory profile loaded used={memory_profile_bundle.get('used')} files={len(memory_profile_bundle.get('files') or [])} chars={memory_profile_bundle.get('chars', 0)}",
+        flush=True,
+    )
 
     if search_used:
         print("[L2] calling L4-search", flush=True)
@@ -1236,14 +1425,26 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         )
 
     messages_for_ollama: List[Dict[str, Any]] = [m.model_dump() for m in req.messages]
+    if _is_qwen3_model(req.model):
+        messages_for_ollama = _apply_no_think_prefix_to_last_user(messages_for_ollama)
+    messages_for_ollama.insert(
+        0,
+        {"role": "system", "content": _iris_answer_style_rules_text()},
+    )
+    if memory_profile_bundle.get("used") and memory_profile_bundle.get("text"):
+        messages_for_ollama.insert(
+            1,
+            {"role": "system", "content": str(memory_profile_bundle["text"])},
+        )
+    profile_offset = 1 if memory_profile_bundle.get("used") and memory_profile_bundle.get("text") else 0
     if memory_context_str:
         messages_for_ollama.insert(
-            0,
+            1 + profile_offset,
             {"role": "system", "content": memory_context_str},
         )
     if search_context:
         messages_for_ollama.insert(
-            1 if memory_context_str else 0,
+            2 + profile_offset if memory_context_str else 1 + profile_offset,
             {"role": "system", "content": search_context},
         )
 
@@ -1251,7 +1452,11 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         "model": req.model,
         "messages": messages_for_ollama,
         "stream": bool(req.stream),
-        "think": False,
+        # think:true 로 호출하면 Ollama가 thinking을 별도 message.thinking 필드로 분리해 반환.
+        # 그 결과 message.content 에는 모델 reasoning이 섞이지 않은 깨끗한 본문만 들어온다.
+        # 과거 think:false 로 호출하던 시절엔 qwen3가 thinking을 그냥 content에 섞어 뱉어
+        # 사용자 본문 앞에 영어 reasoning이 노출되는 문제가 있었음.
+        "think": True,
     }
     if options:
         payload["options"] = options
@@ -1271,6 +1476,10 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         memory_context_chars=len(memory_context_str),
         memory_writeback_ok=False,
         memory_error=memory_err,
+        memory_profile_used=bool(memory_profile_bundle.get("used")),
+        memory_profile_files=list(memory_profile_bundle.get("files") or []),
+        memory_profile_chars=int(memory_profile_bundle.get("chars", 0)),
+        memory_profile_error=memory_profile_bundle.get("error"),
     )
 
     if req.stream:
@@ -1387,6 +1596,45 @@ async def debug_memory_prefetch(body: DebugMemoryPrefetchRequest):
     }
 
 
+@app.get("/memory/files")
+def memory_profile_files():
+    files = []
+    for name, role in MEMORY_FILE_ROLES.items():
+        p = MEMORY_PROFILE_DIR / name
+        files.append(
+            {
+                "name": name,
+                "role": role,
+                "path": f"memory-profiles/{MEMORY_PROFILE_NAME}/{name}",
+                "size": int(p.stat().st_size) if p.exists() and p.is_file() else 0,
+            }
+        )
+    return {
+        "ok": True,
+        "profile": MEMORY_PROFILE_NAME,
+        "base_dir": str(MEMORY_PROFILE_DIR),
+        "files": files,
+    }
+
+
+@app.get("/memory/files/{filename}")
+def memory_profile_file(filename: str):
+    p = _memory_profile_file_path(filename)
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="memory profile file not found")
+    try:
+        content = p.read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"failed to read file: {e}")
+    return {
+        "ok": True,
+        "profile": MEMORY_PROFILE_NAME,
+        "name": filename,
+        "role": MEMORY_FILE_ROLES[filename],
+        "content": content,
+    }
+
+
 @app.get("/")
 def root():
     return {
@@ -1401,5 +1649,7 @@ def root():
             "/search",
             "/debug/search-decision",
             "/debug/memory-prefetch",
+            "/memory/files",
+            "/memory/files/{filename}",
         ],
     }

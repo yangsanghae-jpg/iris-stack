@@ -1,0 +1,144 @@
+# IRIS Observability stack (V2.6 dashboard, advanced into V2.5 ops)
+# Grafana + Prometheus + cAdvisor + node-exporter + Loki + Promtail
+#
+# Usage (host M5):
+#   cd /Volumes/0Dev/iris-stack
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# Stop only observability:
+#   docker compose -f docker-compose.observability.yml down
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: iris-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+      - iris-prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - iris-net
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: iris-cadvisor
+    restart: unless-stopped
+    privileged: true
+    command:
+      - '--docker_only=true'
+      - '--store_container_labels=false'
+      - '--whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service'
+      - '--housekeeping_interval=15s'
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "${CADVISOR_PORT:-8081}:8080"
+    networks:
+      - iris-net
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: iris-node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.rootfs=/host'
+    pid: host
+    # macOS Docker Desktop: rslave mount fails on /
+    volumes:
+      - /:/host:ro
+    ports:
+      - "${NODE_EXPORTER_PORT:-9100}:9100"
+    networks:
+      - iris-net
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: iris-blackbox-exporter
+    restart: unless-stopped
+    volumes:
+      - ./observability/blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    ports:
+      - "${BLACKBOX_PORT:-9115}:9115"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - iris-net
+
+  loki:
+    image: grafana/loki:3.2.1
+    container_name: iris-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./observability/loki/loki.yml:/etc/loki/loki.yml:ro
+      - iris-loki-data:/loki
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    networks:
+      - iris-net
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    container_name: iris-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ./observability/promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      # K5 telemetry log lives on host; mount the iris-system storage dir read-only.
+      - /Users/iris/Documents/0Dev/iris-system/storage:/mnt/iris-system-storage:ro
+      - iris-promtail-positions:/var/lib/promtail
+    depends_on:
+      - loki
+    networks:
+      - iris-net
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: iris-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-iris-local}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - iris-grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3030}:3000"
+    networks:
+      - iris-net
+
+volumes:
+  iris-prometheus-data:
+    name: iris-prometheus-data
+  iris-loki-data:
+    name: iris-loki-data
+  iris-promtail-positions:
+    name: iris-promtail-positions
+  iris-grafana-data:
+    name: iris-grafana-data
+
+networks:
+  iris-net:
+    name: iris-net
+    external: true

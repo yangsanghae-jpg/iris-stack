@@ -1,0 +1,49 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: info
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: iris-k5-telemetry
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: iris_k5_telemetry
+          source: K5
+          __path__: /mnt/iris-system-storage/iris_k5_telemetry*.log
+    pipeline_stages:
+      # K5 Telemetry Zero format (V2.5 §8.1):
+      # [TIMESTAMP] | CALLER_ID | ROUTING_MODE | HIT_COUNT | RESPONSE_TIME_MS | FALLBACK_FLAG
+      - regex:
+          expression: >-
+            ^\[(?P<ts>[^\]]+)\]\s*\|\s*(?P<caller>[^|]+?)\s*\|\s*(?P<mode>[^|]+?)\s*\|\s*(?P<hit_count>\d+)\s*\|\s*(?P<response_ms>\d+(?:\.\d+)?)\s*\|\s*(?P<fallback>true|false|0|1)\s*$
+      - labels:
+          caller:
+          mode:
+          fallback:
+      - timestamp:
+          source: ts
+          format: RFC3339Nano
+          fallback_formats:
+            - RFC3339
+            - "2006-01-02 15:04:05"
+            - "2006-01-02T15:04:05Z07:00"
+      - metrics:
+          k5_request_total:
+            type: Counter
+            description: K5 retrieval requests parsed from telemetry log
+            source: hit_count
+            config:
+              action: inc
+          k5_response_ms:
+            type: Histogram
+            description: K5 retrieval response time in milliseconds
+            source: response_ms
+            config:
+              buckets: [25, 50, 100, 250, 500, 1000, 2500, 5000]

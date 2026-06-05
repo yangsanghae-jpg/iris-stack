@@ -1,0 +1,203 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [
+    {"title": "Open WebUI", "url": "http://localhost:3000", "targetBlank": true, "type": "link", "icon": "external link"},
+    {"title": "L2 Gateway", "url": "http://localhost:8011/health", "targetBlank": true, "type": "link", "icon": "external link"},
+    {"title": "iris-memory", "url": "http://localhost:8001/docs", "targetBlank": true, "type": "link", "icon": "external link"},
+    {"title": "memory-admin", "url": "http://localhost:18020", "targetBlank": true, "type": "link", "icon": "external link"},
+    {"title": "L4 Search", "url": "http://localhost:8020/health", "targetBlank": true, "type": "link", "icon": "external link"},
+    {"title": "iris-claw", "url": "http://localhost:18789", "targetBlank": true, "type": "link", "icon": "external link"},
+    {"title": "diagnosis-tool", "url": "http://localhost:3001", "targetBlank": true, "type": "link", "icon": "external link"}
+  ],
+  "liveNow": false,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["iris", "readiness", "product"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "IRIS — 제품 동작 상태판",
+  "uid": "iris-product-readiness",
+  "version": 10,
+  "weekStart": "",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Open WebUI",
+      "description": "[localhost:3000](http://localhost:3000)",
+      "links": [{"title": ":3000 ↗", "url": "http://localhost:3000", "targetBlank": true, "type": "link"}],
+      "gridPos": {"h": 3, "w": 3, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "iris:card_ready_v2{card=\"open-webui\"}", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1, "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "0.5": {"text": "DEGRADED", "color": "orange"}, "1": {"text": "READY", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.5}, {"color": "green", "value": 1}]}, "color": {"mode": "thresholds"}, "links": [{"title": "열기", "url": "http://localhost:3000", "targetBlank": true}]}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value", "colorMode": "background_solid", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "wideLayout": false, "text": {"titleSize": 14, "valueSize": 16}, "showPercentChange": false}
+    },
+    {
+      "type": "stat",
+      "title": "L2 Gateway",
+      "description": "[localhost:8011](http://localhost:8011/health)",
+      "links": [{"title": ":8011 ↗", "url": "http://localhost:8011/health", "targetBlank": true, "type": "link"}],
+      "gridPos": {"h": 3, "w": 3, "x": 3, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "iris:card_ready_v2{card=\"l2-gateway\"}", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1, "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "0.5": {"text": "DEGRADED", "color": "orange"}, "1": {"text": "READY", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.5}, {"color": "green", "value": 1}]}, "color": {"mode": "thresholds"}, "links": [{"title": "열기", "url": "http://localhost:8011/health", "targetBlank": true}]}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value", "colorMode": "background_solid", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "wideLayout": false, "text": {"titleSize": 14, "valueSize": 16}, "showPercentChange": false}
+    },
+    {
+      "type": "stat",
+      "title": "iris-memory",
+      "description": "[localhost:8001](http://localhost:8001/docs)",
+      "links": [{"title": ":8001 ↗", "url": "http://localhost:8001/docs", "targetBlank": true, "type": "link"}],
+      "gridPos": {"h": 3, "w": 3, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "iris:card_ready_v2{card=\"iris-memory\"}", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1, "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "0.5": {"text": "DEGRADED", "color": "orange"}, "1": {"text": "READY", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.5}, {"color": "green", "value": 1}]}, "color": {"mode": "thresholds"}, "links": [{"title": "서비스 열기", "url": "http://localhost:8001/docs", "targetBlank": true}]}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value", "colorMode": "background_solid", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "wideLayout": false, "text": {"titleSize": 14, "valueSize": 16}}
+    },
+    {
+      "type": "stat",
+      "title": "memory-admin",
+      "description": "[localhost:18020](http://localhost:18020)",
+      "links": [{"title": ":18020 ↗", "url": "http://localhost:18020", "targetBlank": true, "type": "link"}],
+      "gridPos": {"h": 3, "w": 3, "x": 9, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "iris:card_ready_v2{card=\"memory-admin\"}", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1, "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "0.5": {"text": "DEGRADED", "color": "orange"}, "1": {"text": "READY", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.5}, {"color": "green", "value": 1}]}, "color": {"mode": "thresholds"}, "links": [{"title": "서비스 열기", "url": "http://localhost:18020", "targetBlank": true}]}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value", "colorMode": "background_solid", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "wideLayout": false, "text": {"titleSize": 14, "valueSize": 16}}
+    },
+    {
+      "type": "stat",
+      "title": "L4 Search (API)",
+      "description": "UI 없음 · API: POST /search · 상태: [localhost:8020/health](http://localhost:8020/health)",
+      "links": [{"title": "health ↗", "url": "http://localhost:8020/health", "targetBlank": true, "type": "link"}],
+      "gridPos": {"h": 3, "w": 3, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "iris:card_ready_v2{card=\"l4-search\"}", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1, "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "0.5": {"text": "DEGRADED", "color": "orange"}, "1": {"text": "READY", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.5}, {"color": "green", "value": 1}]}, "color": {"mode": "thresholds"}, "links": [{"title": "서비스 열기", "url": "http://localhost:8020/health", "targetBlank": true}]}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value", "colorMode": "background_solid", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "wideLayout": false, "text": {"titleSize": 14, "valueSize": 16}}
+    },
+    {
+      "type": "stat",
+      "title": "iris-claw",
+      "description": "[localhost:18789](http://localhost:18789)",
+      "links": [{"title": ":18789 ↗", "url": "http://localhost:18789", "targetBlank": true, "type": "link"}],
+      "gridPos": {"h": 3, "w": 3, "x": 15, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "iris:card_ready_v2{card=\"iris-claw\"}", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1, "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "0.5": {"text": "DEGRADED", "color": "orange"}, "1": {"text": "READY", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.5}, {"color": "green", "value": 1}]}, "color": {"mode": "thresholds"}, "links": [{"title": "서비스 열기", "url": "http://localhost:18789", "targetBlank": true}]}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value", "colorMode": "background_solid", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "wideLayout": false, "text": {"titleSize": 14, "valueSize": 16}}
+    },
+    {
+      "type": "stat",
+      "title": "diagnosis-tool",
+      "description": "[localhost:3001](http://localhost:3001)",
+      "links": [{"title": ":3001 ↗", "url": "http://localhost:3001", "targetBlank": true, "type": "link"}],
+      "gridPos": {"h": 3, "w": 3, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "iris:card_ready_v2{card=\"diagnosis\"}", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1, "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "0.5": {"text": "DEGRADED", "color": "orange"}, "1": {"text": "READY", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 0.5}, {"color": "green", "value": 1}]}, "color": {"mode": "thresholds"}, "links": [{"title": "서비스 열기", "url": "http://localhost:3001", "targetBlank": true}]}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value", "colorMode": "background_solid", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "wideLayout": false, "text": {"titleSize": 14, "valueSize": 16}}
+    },
+    {
+      "type": "table",
+      "title": "구성요소",
+      "gridPos": {"h": 11, "w": 12, "x": 0, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "probe_success{job=\"iris-services-blackbox\"}", "refId": "A", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true, "format": "table"},
+        {"expr": "probe_duration_seconds{job=\"iris-services-blackbox\"} * 1000", "refId": "B", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true, "format": "table"}
+      ],
+      "transformations": [
+        {"id": "joinByField", "options": {"byField": "instance", "mode": "outer"}},
+        {"id": "organize", "options": {
+          "excludeByName": {
+            "Time": true, "Time 1": true, "Time 2": true,
+            "job": true, "job 1": true, "job 2": true,
+            "__name__": true, "__name__ 1": true, "__name__ 2": true,
+            "check": true, "check 1": true, "check 2": true,
+            "card 2": true, "service 2": true, "role 2": true, "surface 2": true, "kind 2": true,
+            "instance": true, "surface 1": true, "kind 1": true,
+            "browse_url 2": true
+          },
+          "indexByName": {"card 1": 0, "role 1": 1, "service 1": 2, "browse_url 1": 3, "Value #A": 4, "Value #B": 5},
+          "renameByName": {"card 1": "Product", "role 1": "Role", "service 1": "Component", "browse_url 1": "Link", "Value #A": "Status", "Value #B": "Latency"}
+        }},
+        {"id": "sortBy", "options": {"fields": {}, "sort": [{"field": "Product", "desc": true}, {"field": "Role", "desc": false}]}}
+      ],
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "left", "minWidth": 60}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "Status"}, "properties": [
+            {"id": "mappings", "value": [{"type": "value", "options": {"0": {"text": "● DOWN", "color": "red"}, "1": {"text": "● UP", "color": "green"}}}]},
+            {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+            {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}},
+            {"id": "custom.width", "value": 80}, {"id": "custom.align", "value": "center"}
+          ]},
+          {"matcher": {"id": "byName", "options": "Latency"}, "properties": [{"id": "unit", "value": "ms"}, {"id": "custom.width", "value": 90}, {"id": "decimals", "value": 1}, {"id": "custom.align", "value": "right"}]},
+          {"matcher": {"id": "byName", "options": "Role"}, "properties": [
+            {"id": "mappings", "value": [{"type": "value", "options": {"body": {"text": "본체", "color": "#5794F2"}, "dependency": {"text": "의존", "color": "#8e8e93"}}}]},
+            {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+            {"id": "custom.width", "value": 60}
+          ]},
+          {"matcher": {"id": "byName", "options": "Product"}, "properties": [{"id": "custom.width", "value": 120}]},
+          {"matcher": {"id": "byName", "options": "Component"}, "properties": [{"id": "custom.width", "value": 120}]},
+          {"matcher": {"id": "byName", "options": "Link"}, "properties": [
+            {"id": "links", "value": [{"title": "↗", "url": "${__value.text}", "targetBlank": true}]},
+            {"id": "custom.cellOptions", "value": {"type": "link"}},
+            {"id": "custom.width", "value": 160}
+          ]}
+        ]
+      },
+      "options": {"showHeader": true, "footer": {"show": false}, "cellHeight": "sm"}
+    },
+    {
+      "type": "bargauge",
+      "title": "서비스 가용률 (1h)",
+      "gridPos": {"h": 11, "w": 7, "x": 12, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "avg_over_time(probe_success{job=\"iris-services-blackbox\", role=\"body\"}[1h]) * 100", "refId": "A", "legendFormat": "{{card}}", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true}],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100, "decimals": 2,
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "orange", "value": 80}, {"color": "yellow", "value": 95}, {"color": "green", "value": 99}]},
+          "color": {"mode": "thresholds"}
+        }
+      },
+      "options": {
+        "displayMode": "basic", "valueMode": "color", "showUnfilled": true,
+        "minVizWidth": 0, "minVizHeight": 10, "namePlacement": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "sizing": "auto"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "이상 알림",
+      "gridPos": {"h": 5, "w": 5, "x": 19, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "count(probe_success{job=\"iris-services-blackbox\"} == 0) or vector(0)", "refId": "A", "legendFormat": "DOWN", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true},
+        {"expr": "count(iris:card_ready_v2 < 1) or vector(0)", "refId": "B", "legendFormat": "Degraded", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true},
+        {"expr": "sum(changes(container_start_time_seconds{container_label_com_docker_compose_project=~\"iris-stack|iris-memory\"}[1h])) or vector(0)", "refId": "C", "legendFormat": "Restarts", "datasource": {"type": "prometheus", "uid": "prometheus"}, "instant": true}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 3}]}, "color": {"mode": "thresholds"}, "noValue": "0"}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "value_and_name", "colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "horizontal"}
+    },
+    {
+      "type": "timeseries",
+      "title": "응답시간 (ms)",
+      "gridPos": {"h": 6, "w": 5, "x": 19, "y": 9},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "probe_duration_seconds{job=\"iris-services-blackbox\", role=\"body\"} * 1000", "refId": "A", "legendFormat": "{{card}}", "datasource": {"type": "prometheus", "uid": "prometheus"}}],
+      "fieldConfig": {"defaults": {"unit": "ms", "decimals": 0, "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 8, "spanNulls": true, "pointSize": 0, "showPoints": "never", "lineInterpolation": "smooth"}}},
+      "options": {"legend": {"displayMode": "hidden"}, "tooltip": {"mode": "multi", "sort": "none"}}
+    }
+  ]
+}

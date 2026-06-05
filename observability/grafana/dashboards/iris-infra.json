@@ -1,0 +1,101 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "서비스 가용성 (probe_success)",
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "probe_success{job=\"iris-services-blackbox\"}",
+          "refId": "A",
+          "legendFormat": "{{instance}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        }
+      },
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": true}, "textMode": "value_and_name"}
+    },
+    {
+      "type": "timeseries",
+      "title": "컨테이너 CPU 사용률 (%)",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (container_label_com_docker_compose_service) (rate(container_cpu_usage_seconds_total{container_label_com_docker_compose_project=~\"iris-stack|iris-memory\"}[2m])) * 100",
+          "refId": "A",
+          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "컨테이너 메모리 (RSS, MB)",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "sum by (container_label_com_docker_compose_service) (container_memory_rss{container_label_com_docker_compose_project=~\"iris-stack|iris-memory\"}) / 1024 / 1024",
+          "refId": "A",
+          "legendFormat": "{{container_label_com_docker_compose_service}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "decmbytes"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "Probe 응답시간 (s)",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 15},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {
+          "expr": "probe_duration_seconds{job=\"iris-services-blackbox\"}",
+          "refId": "A",
+          "legendFormat": "{{instance}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "type": "timeseries",
+      "title": "호스트 부하 (1m / 5m / 15m)",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 15},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"expr": "node_load1", "refId": "A", "legendFormat": "load1", "datasource": {"type": "prometheus", "uid": "prometheus"}},
+        {"expr": "node_load5", "refId": "B", "legendFormat": "load5", "datasource": {"type": "prometheus", "uid": "prometheus"}},
+        {"expr": "node_load15", "refId": "C", "legendFormat": "load15", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["iris", "infra", "secondary"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "IRIS — 인프라 & 헬스체크",
+  "uid": "iris-infra",
+  "version": 1,
+  "weekStart": ""
+}
