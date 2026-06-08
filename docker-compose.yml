@@ -81,6 +81,8 @@ services:
     environment:
       IRIS_MEMORY_BASE_URL: "${IRIS_MEMORY_BASE_URL:-http://host.docker.internal:8001}"
       IRIS_MEMORY_DB_PATH: "/app/data/memory.db"
+      # M5: host :8010 = diagnosis-tool llm-gateway. iris-stack L2는 :8011 (또는 iris-net 내부 8010).
+      L2_GATEWAY_BASE_URL: "${L2_GATEWAY_BASE_URL:-http://l2-gateway:8010}"
     volumes:
       - /Users/iris/Documents/0Dev/iris-memory/data:/app/data:ro
     networks:
