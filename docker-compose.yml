@@ -84,7 +84,7 @@ services:
       # M5: host :8010 = diagnosis-tool llm-gateway. iris-stack L2는 :8011 (또는 iris-net 내부 8010).
       L2_GATEWAY_BASE_URL: "${L2_GATEWAY_BASE_URL:-http://l2-gateway:8010}"
     volumes:
-      - /Users/iris/Documents/0Dev/iris-memory/data:/app/data:ro
+      - /Users/iris/Documents/1Dev/iris-memory/data:/app/data:ro
     networks:
       - iris-net
 
@@ -108,7 +108,7 @@ services:
     volumes:
       # knowledge/.nosync에 실 _index.db가 있고 symlink로 노출됨.
       # 호스트의 knowledge 전체를 마운트 — symlink가 따라가짐.
-      - /Users/iris/Documents/0Dev/iris-system/knowledge:/app/knowledge
+      - /Users/iris/iris-system/knowledge:/app/knowledge
       # storage는 ~/iris-local/storage → symlink가 0Dev 안에 있으나 컨테이너에서는 호스트 절대경로 마운트.
       - /Users/iris/iris-local/storage:/app/storage
     extra_hosts:

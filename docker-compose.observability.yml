@@ -99,7 +99,7 @@ services:
     volumes:
       - ./observability/promtail/promtail.yml:/etc/promtail/promtail.yml:ro
       # K5 telemetry log lives on host; mount the iris-system storage dir read-only.
-      - /Users/iris/Documents/0Dev/iris-system/storage:/mnt/iris-system-storage:ro
+      - /Users/iris/iris-system/storage:/mnt/iris-system-storage:ro
       - iris-promtail-positions:/var/lib/promtail
     depends_on:
       - loki
