@@ -15,7 +15,8 @@ M2는 제품별 Compose를 유지하면서 `iris-stack`이 L2 실행 정책과 �
   -> 제품별 독립 Compose와 제품 DB
 
 사용자 호출자
-  -> M2 L2 (:8011)
+  -> 공통 Gateway / 화면 도우미
+  -> M2 L2 (:8011, iris-net 내부 l2-gateway:8010)
   -> host Ollama (:11434)
   -> qwen3.5:4b 단일 허용 모델
 ```
@@ -28,6 +29,8 @@ M2 기본 Compose에는 다음 서비스를 넣지 않는다.
 - Grafana, Prometheus 등 전체 모니터링 오버레이
 - 폐기된 L3 `iris-memory`와 memory profile
 
+L2는 기존 외부 Docker 네트워크 `iris-net`에 참여한다. 제품 공통 Gateway는 같은 네트워크에서 `http://l2-gateway:8010`으로 접근한다.
+
 ## 2. 런타임 제한
 
 | 항목 | M2 기본값 | 적용 위치 |
@@ -36,10 +39,11 @@ M2 기본 Compose에는 다음 서비스를 넣지 않는다.
 | 기본 모델 | `qwen3.5:4b` | `IRIS_DEFAULT_MODEL` |
 | 컨텍스트 상한 | 8,192 tokens | Ollama `num_ctx` |
 | 출력 상한 | 1,024 tokens | Ollama `num_predict` |
+| 모델 thinking | 꺼짐 | `IRIS_THINK_ENABLED=false` |
 | 웹 검색 | 꺼짐 | `IRIS_SEARCH_ENABLED=false` |
 | L3 메모리 | 꺼짐 | `IRIS_MEMORY_ENABLED=false` |
 
-클라이언트가 더 큰 `num_ctx`, `num_predict`, `max_tokens`를 보내도 L2가 M2 상한으로 낮춘다. 허용 목록 밖의 모델은 `/chat`과 `/v1/chat/completions`에서 HTTP 400으로 거부하고 `/models` 및 `/v1/models`에서도 노출하지 않는다.
+클라이언트가 더 큰 `num_ctx`, `num_predict`, `max_tokens`를 보내도 L2가 M2 상한으로 낮춘다. M2에서는 4B 모델이 제한된 출력 토큰을 내부 추론에 모두 소모하지 않도록 Ollama thinking을 끈다. 허용 목록 밖의 모델은 `/chat`과 `/v1/chat/completions`에서 HTTP 400으로 거부하고 `/models` 및 `/v1/models`에서도 노출하지 않는다.
 
 `GET /health`는 프로세스 생존과 적용 정책을 보여준다. `GET /ready`는 Ollama 연결과 기본 4B 모델 설치까지 확인하며 준비되지 않았으면 HTTP 503을 반환한다.
 
@@ -80,16 +84,24 @@ URL은 `.env.m2`의 `M2_*_HEALTH_URL`로 바꿀 수 있다. `status`와 `verify-
 
 ## 5. 현재 남은 범위
 
-이번 단계는 경량 실행 기반만 구축한다. 다음 항목은 아직 구현되지 않았다.
+이번 단계는 경량 실행 기반과 Sales 화면 도우미 연결까지 구축한다. 제품 공통 Gateway 정본은 로컬 구형 개발 통제기와 충돌을 피하기 위해 `/Users/iris/Documents/1Dev/iris-common-gateway`에 체크아웃한다.
 
-- 사용자 인증·권한·대화 감사 로그를 소유할 제품용 IRIS Gateway
-- SPC·APS·Sales·QMS 정형 질문 Direct Handler
+현재 구현된 범위:
+
+- 제품 공통 Gateway의 사용자별 대화 이력과 Sales 제품 세션 확인
+- `iris-sales.localhost`에서 Router가 공통 도우미 위젯 주입
+- Sales 화면 설명을 Gateway -> M2 L2 -> Ollama `qwen3.5:4b`로 전달
+- 로그인 사용자의 최근 1개월 수주 실적 Direct Handler
+
+다음 항목은 아직 구현되지 않았다.
+
+- Sales 목표·실적, SPC·APS·QMS 정형 질문 Direct Handler 확장
 - L2와 L4-K 표준 retrieval의 본문 구절·출처 전달 계약
 - M2 고정 교차 시스템 workflow
 - M5 전달 계약
 - 승인형 command
 
-현재 `iris-gateway`는 로컬 개발 작업 통제기이므로 제품용 Gateway 구현으로 간주하지 않는다. L4-K의 현재 표준 retrieval 응답은 문서 메타데이터 중심이어서, L2에 근거 문장을 주입하기 전에 passage와 citation 스키마를 먼저 고정해야 한다.
+현재 `/Users/iris/Documents/1Dev/iris-gateway`는 로컬 개발 작업 통제기로 보존하며, 제품용 Gateway는 `iris-common-gateway`가 담당한다. L4-K의 현재 표준 retrieval 응답은 문서 메타데이터 중심이어서, L2에 근거 문장을 주입하기 전에 passage와 citation 스키마를 먼저 고정해야 한다.
 
 ## 6. Phase 판정
 

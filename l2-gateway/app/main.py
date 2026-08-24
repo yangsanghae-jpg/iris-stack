@@ -1503,7 +1503,8 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         # 그 결과 message.content 에는 모델 reasoning이 섞이지 않은 깨끗한 본문만 들어온다.
         # 과거 think:false 로 호출하던 시절엔 qwen3가 thinking을 그냥 content에 섞어 뱉어
         # 사용자 본문 앞에 영어 reasoning이 노출되는 문제가 있었음.
-        "think": True,
+        # M2의 4B 프로필은 제한된 출력 토큰을 답변에 사용하도록 thinking을 끈다.
+        "think": _parse_bool_env("IRIS_THINK_ENABLED", True),
     }
     if options:
         payload["options"] = options

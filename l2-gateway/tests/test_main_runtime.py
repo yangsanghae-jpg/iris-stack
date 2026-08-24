@@ -10,6 +10,7 @@ os.environ["IRIS_MODEL_NUM_PREDICT"] = "1024"
 os.environ["IRIS_SEARCH_ENABLED"] = "false"
 os.environ["IRIS_MEMORY_ENABLED"] = "false"
 os.environ["IRIS_MEMORY_PROFILE_ENABLED"] = "false"
+os.environ["IRIS_THINK_ENABLED"] = "false"
 
 from fastapi.testclient import TestClient
 
@@ -78,6 +79,7 @@ class MainRuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = post.call_args.kwargs["json"]
         self.assertEqual(payload["model"], "qwen3.5:4b")
+        self.assertIs(payload["think"], False)
         self.assertEqual(payload["options"]["num_ctx"], 8192)
         self.assertEqual(payload["options"]["num_predict"], 1024)
         writeback.assert_not_awaited()

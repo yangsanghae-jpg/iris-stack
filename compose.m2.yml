@@ -19,8 +19,11 @@ services:
       IRIS_SEARCH_ENABLED: "false"
       IRIS_MEMORY_ENABLED: "false"
       IRIS_MEMORY_PROFILE_ENABLED: "false"
+      IRIS_THINK_ENABLED: "false"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - iris-net
     healthcheck:
       test:
         - CMD
@@ -33,3 +36,8 @@ services:
       timeout: 6s
       retries: 3
       start_period: 15s
+
+networks:
+  iris-net:
+    external: true
+    name: iris-net

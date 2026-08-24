@@ -13,6 +13,12 @@ compose_m2() {
   docker compose --env-file "$ENV_FILE" -f "$STACK_DIR/compose.m2.yml" "$@"
 }
 
+ensure_shared_network() {
+  if ! docker network inspect iris-net >/dev/null 2>&1; then
+    docker network create iris-net >/dev/null
+  fi
+}
+
 env_value() {
   local key="$1"
   awk -F= -v wanted="$key" '
@@ -180,6 +186,7 @@ case "$command" in
     ;;
   up)
     preflight_ollama
+    ensure_shared_network
     start_products "$products"
     compose_m2 up -d --build --wait --wait-timeout 90 l2-gateway
     verify_runtime "$products"
