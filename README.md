@@ -116,6 +116,19 @@ curl -sS http://127.0.0.1:8010/v1/models | python3 -m json.tool | head -80
 
 Optional: `./scripts/status.sh` (from `iris-stack`) prints compose status, L2/L4 health, and a sample of `/v1/models`.
 
+## M2 Lightweight Runtime
+
+M2 uses a separate Compose file that starts only L2. OpenWebUI, OpenClaw, web search, memory, and the observability stack are excluded from this profile.
+
+```bash
+cp .env.m2.example .env.m2
+./scripts/m2-runtime.sh test
+./scripts/m2-runtime.sh preflight
+./scripts/m2-runtime.sh up spc qms
+```
+
+The default policy allows only `qwen3.5:4b`, caps context at 8K tokens and output at 1,024 tokens, and publishes L2 on `127.0.0.1:8011`. See [docs/M2_RUNTIME_PHASE1.md](docs/M2_RUNTIME_PHASE1.md).
+
 ### Git Baseline Tag
 
 This baseline is intended to be tagged as:

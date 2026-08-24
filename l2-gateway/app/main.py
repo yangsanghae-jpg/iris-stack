@@ -7,12 +7,15 @@ from pathlib import Path
 import httpx
 import requests
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any, Tuple, AsyncIterator
 
+from app.runtime_policy import RuntimePolicy
+
 APP_NAME = "iris-l2-gateway"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
+RUNTIME_POLICY = RuntimePolicy.from_env()
 
 
 def _normalize_l4_search_urls() -> Tuple[str, str]:
@@ -1129,11 +1132,12 @@ async def _ollama_chat_stream_sse(
                     content=piece,
                 )
             )
-        print("[L2] memory writeback (stream)", flush=True)
-        wb = await call_memory_writeback(last_user_content, final_text, iris_trace)
-        iris_trace["memory_writeback_ok"] = bool(wb.get("ok"))
-        if not wb.get("ok"):
-            print(f"[L2] memory writeback failed (stream): {wb.get('error')}", flush=True)
+        if iris_trace.get("memory_enabled"):
+            print("[L2] memory writeback (stream)", flush=True)
+            wb = await call_memory_writeback(last_user_content, final_text, iris_trace)
+            iris_trace["memory_writeback_ok"] = bool(wb.get("ok"))
+            if not wb.get("ok"):
+                print(f"[L2] memory writeback failed (stream): {wb.get('error')}", flush=True)
 
         last_chunk = _openai_chunk(
             request_id,
@@ -1278,15 +1282,55 @@ def health():
         "memory_enabled": bool(mem_cfg["memory_enabled"]),
         "memory_base_url": mem_cfg["memory_base_url"],
         "memory_health": {"ok": bool(mh.get("ok"))},
+        "runtime_policy": RUNTIME_POLICY.as_dict(),
     }
+
+
+def _fetch_ollama_models(timeout: float = 10.0) -> Tuple[dict, List[dict]]:
+    r = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    models = data.get("models", []) if isinstance(data, dict) else []
+    if not isinstance(models, list):
+        models = []
+    return data, RUNTIME_POLICY.filter_ollama_models(models)
+
+
+@app.get("/ready")
+def ready():
+    try:
+        _, models = _fetch_ollama_models(timeout=5.0)
+        available = [str(model.get("name")) for model in models if model.get("name")]
+        default_ready = RUNTIME_POLICY.default_model in available
+        body = {
+            "ok": default_ready,
+            "app": APP_NAME,
+            "runtime_policy": RUNTIME_POLICY.as_dict(),
+            "default_model_ready": default_ready,
+            "available_models": available,
+        }
+        return JSONResponse(content=body, status_code=200 if default_ready else 503)
+    except Exception as e:
+        return JSONResponse(
+            content={
+                "ok": False,
+                "app": APP_NAME,
+                "runtime_policy": RUNTIME_POLICY.as_dict(),
+                "default_model_ready": False,
+                "available_models": [],
+                "error": str(e)[:500],
+            },
+            status_code=503,
+        )
 
 
 @app.get("/models")
 def models():
     try:
-        r = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10)
-        r.raise_for_status()
-        return r.json()
+        data, filtered_models = _fetch_ollama_models()
+        if isinstance(data, dict):
+            return {**data, "models": filtered_models}
+        return {"models": filtered_models}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Ollama models fetch failed: {e}")
 
@@ -1294,10 +1338,7 @@ def models():
 @app.get("/v1/models")
 def openai_models():
     try:
-        r = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        models = data.get("models", [])
+        _, models = _fetch_ollama_models()
         return {
             "object": "list",
             "data": [
@@ -1321,16 +1362,19 @@ def chat(req: ChatRequest):
     Minimal L2 chat endpoint.
     현재는 OpenAI 호환이 아니라 Ollama /api/chat passthrough에 가깝게 동작한다.
     """
+    try:
+        model = RUNTIME_POLICY.resolve_model(req.model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     payload = {
-        "model": req.model,
+        "model": model,
         "messages": [m.model_dump() for m in req.messages],
         "stream": req.stream,
+        "options": RUNTIME_POLICY.apply_generation_limits(req.options),
     }
-    if req.options:
-        payload["options"] = req.options
     try:
         print("[L2] /chat request:", {
-            "model": req.model,
+            "model": model,
             "message_count": len(req.messages),
             "stream": req.stream,
         }, flush=True)
@@ -1350,9 +1394,13 @@ def chat(req: ChatRequest):
 
 @app.post("/v1/chat/completions")
 async def openai_chat_completions(req: OpenAIChatCompletionRequest):
+    try:
+        model = RUNTIME_POLICY.resolve_model(req.model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     print(
         "[L2] request received",
-        {"path": "/v1/chat/completions", "model": req.model, "stream": req.stream},
+        {"path": "/v1/chat/completions", "model": model, "stream": req.stream},
         flush=True,
     )
 
@@ -1363,9 +1411,8 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         options["num_predict"] = req.max_tokens
     if req.top_p is not None:
         options["top_p"] = req.top_p
-    # Keep runtime defaults aligned with direct Ollama tests when UI does not send options.
-    options.setdefault("num_ctx", 32768)
-    options.setdefault("num_predict", 4096)
+    # Runtime profiles cap caller-provided values as well as supplying defaults.
+    options = RUNTIME_POLICY.apply_generation_limits(options)
     options.setdefault("temperature", 0.5)
     options.setdefault("top_p", 0.9)
     options.setdefault("repeat_penalty", 1.05)
@@ -1425,7 +1472,7 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         )
 
     messages_for_ollama: List[Dict[str, Any]] = [m.model_dump() for m in req.messages]
-    if _is_qwen3_model(req.model):
+    if _is_qwen3_model(model):
         messages_for_ollama = _apply_no_think_prefix_to_last_user(messages_for_ollama)
     messages_for_ollama.insert(
         0,
@@ -1449,7 +1496,7 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
         )
 
     payload: Dict[str, Any] = {
-        "model": req.model,
+        "model": model,
         "messages": messages_for_ollama,
         "stream": bool(req.stream),
         # think:true 로 호출하면 Ollama가 thinking을 별도 message.thinking 필드로 분리해 반환.
@@ -1463,7 +1510,7 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
     created = int(time.time())
     request_id = f"chatcmpl-iris-{uuid.uuid4().hex[:12]}"
     iris_trace = build_iris_trace(
-        model=req.model,
+        model=model,
         stream=bool(req.stream),
         search_used=search_used,
         search_result=search_result,
@@ -1488,7 +1535,7 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
                 payload,
                 request_id,
                 created,
-                req.model,
+                model,
                 iris_trace,
                 search_used,
                 settings,
@@ -1528,18 +1575,19 @@ async def openai_chat_completions(req: OpenAIChatCompletionRequest):
             f"stripped_think={flags.get('stripped_think')} stripped_sources={flags.get('stripped_sources')}",
             flush=True,
         )
-        print("[L2] memory writeback", flush=True)
-        wb = await call_memory_writeback(last_user_content, content, iris_trace)
-        iris_trace["memory_writeback_ok"] = bool(wb.get("ok"))
-        if not wb.get("ok"):
-            print(f"[L2] memory writeback failed: {wb.get('error')}", flush=True)
+        if mem_cfg["memory_enabled"]:
+            print("[L2] memory writeback", flush=True)
+            wb = await call_memory_writeback(last_user_content, content, iris_trace)
+            iris_trace["memory_writeback_ok"] = bool(wb.get("ok"))
+            if not wb.get("ok"):
+                print(f"[L2] memory writeback failed: {wb.get('error')}", flush=True)
 
         print("[L2] response ok", flush=True)
         return {
             "id": request_id,
             "object": "chat.completion",
             "created": created,
-            "model": req.model,
+            "model": model,
             "choices": [
                 {
                     "index": 0,
@@ -1641,6 +1689,7 @@ def root():
         "app": APP_NAME,
         "routes": [
             "/health",
+            "/ready",
             "/models",
             "/chat",
             "/v1/models",

@@ -1,0 +1,35 @@
+name: ${M2_PROJECT_NAME:-iris-m2}
+
+services:
+  l2-gateway:
+    build:
+      context: ./l2-gateway
+    image: iris-l2-gateway:m2
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${M2_BIND_HOST:-127.0.0.1}:${L2_GATEWAY_PORT:-8011}:8010"
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      IRIS_RUNTIME_PROFILE: m2
+      IRIS_DEFAULT_MODEL: ${M2_LLM_MODEL:-qwen3.5:4b}
+      IRIS_ALLOWED_MODELS: ${M2_LLM_MODEL:-qwen3.5:4b}
+      IRIS_MODEL_NUM_CTX: ${M2_MODEL_NUM_CTX:-8192}
+      IRIS_MODEL_NUM_PREDICT: ${M2_MODEL_NUM_PREDICT:-1024}
+      IRIS_SEARCH_ENABLED: "false"
+      IRIS_MEMORY_ENABLED: "false"
+      IRIS_MEMORY_PROFILE_ENABLED: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          from urllib.request import urlopen;
+          urlopen('http://127.0.0.1:8010/ready', timeout=5).read()
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 15s
